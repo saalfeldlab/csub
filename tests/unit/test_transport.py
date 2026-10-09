@@ -112,3 +112,18 @@ def test_ssh_argv(tmp_path):
     assert argv[-3:] == ["u", "h", "csub-broker"] and argv[argv.index("-l") + 1] == "u"
     t = SshTransport("h")
     assert "-l" not in t.argv and "-i" not in t.argv
+
+
+def test_ssh_silent_failure_is_diagnosed(tmp_path, monkeypatch):
+    """exit 255 with no stderr -> rerun with -v and no multiplexing, report that output."""
+    fake = tmp_path / "ssh"
+    fake.write_text(
+        "#!/bin/sh\n"
+        'case " $* " in *" -v "*) echo "debug1: proxy said no" >&2; exit 255 ;; esac\n'
+        "exit 255\n"
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    t = SshTransport("h", control_dir=str(tmp_path / "cm"))
+    with pytest.raises(TransportError, match="proxy said no"):
+        t.call({"protocol": 1, "op": "probe"})

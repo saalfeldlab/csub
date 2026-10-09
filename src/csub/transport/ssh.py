@@ -45,7 +45,14 @@ class SshTransport:
 
     @property
     def argv(self) -> list[str]:
+        return self._argv()
+
+    def _argv(self, *, diagnose: bool = False) -> list[str]:
         argv = ["ssh", "-T", "-p", str(self.port)]
+        if diagnose:
+            # ssh sends the ProxyCommand's stderr to /dev/null when ControlPersist is on, so a
+            # failing proxy exits 255 with no message; this variant shows it.
+            argv += ["-v", "-o", "ControlMaster=no"]
         if self.key:
             argv += ["-i", self.key, "-o", "IdentitiesOnly=yes"]
         argv += [
@@ -80,6 +87,19 @@ class SshTransport:
             raise TransportError(
                 f"ssh to {self.host} did not answer within {self.timeout_s}s"
             ) from None
+        if cp.returncode == 255 and not cp.stderr.strip():
+            try:
+                cp = subprocess.run(
+                    self._argv(diagnose=True),
+                    input=encode(request),
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout_s,
+                )
+            except subprocess.TimeoutExpired:
+                raise TransportError(
+                    f"ssh to {self.host} did not answer within {self.timeout_s}s"
+                ) from None
         if cp.returncode not in (0, 1) and "command not found" in cp.stderr:
             raise TransportError(
                 f"ssh {self.host}: {cp.stderr.strip().splitlines()[-1]}. The key is not bound to "
