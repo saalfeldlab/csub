@@ -127,3 +127,56 @@ def test_ssh_silent_failure_is_diagnosed(tmp_path, monkeypatch):
     t = SshTransport("h", control_dir=str(tmp_path / "cm"))
     with pytest.raises(TransportError, match="proxy said no"):
         t.call({"protocol": 1, "op": "probe"})
+
+
+def _ssh_that_fails_silently(tmp_path, monkeypatch, probe_script: str):
+    """First (multiplexed) call: read the request, exit 255 silently. The -v rerun runs
+    probe_script instead. Every request body is appended to `log`."""
+    fake = tmp_path / "ssh"
+    log = tmp_path / "requests.log"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f'cat >> "{log}"; echo >> "{log}"\n'
+        f'case " $* " in *" -v "*) {probe_script} ;; esac\n'
+        "exit 255\n"
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    return log
+
+
+SUBMIT = {"protocol": 1, "op": "submit", "job": {"command": "true"}}
+UNKNOWN = "submission outcome is unknown"
+
+
+def _requests(log):
+    return [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
+
+
+def test_ssh_silent_submit_failure_sends_only_a_probe(tmp_path, monkeypatch):
+    log = _ssh_that_fails_silently(tmp_path, monkeypatch, "echo '{\"ok\":true}'; exit 0")
+    t = SshTransport("h", control_dir=str(tmp_path / "cm"))
+    with pytest.raises(TransportError, match=UNKNOWN) as ei:
+        t.call(SUBMIT)
+    assert _requests(log) == [SUBMIT, {"protocol": 1, "op": "probe"}]
+    assert "probe succeeded" in str(ei.value)
+
+
+def test_ssh_silent_submit_failure_probe_fails(tmp_path, monkeypatch):
+    log = _ssh_that_fails_silently(
+        tmp_path, monkeypatch, "echo 'debug1: proxy said no' >&2; exit 255"
+    )
+    t = SshTransport("h", control_dir=str(tmp_path / "cm"))
+    with pytest.raises(TransportError, match=UNKNOWN) as ei:
+        t.call(SUBMIT)
+    assert [r["op"] for r in _requests(log)] == ["submit", "probe"]
+    assert "proxy said no" in str(ei.value)
+
+
+def test_ssh_silent_submit_failure_probe_times_out(tmp_path, monkeypatch):
+    log = _ssh_that_fails_silently(tmp_path, monkeypatch, "sleep 5")
+    t = SshTransport("h", control_dir=str(tmp_path / "cm"), timeout_s=0.5)
+    with pytest.raises(TransportError, match=UNKNOWN) as ei:
+        t.call(SUBMIT)
+    assert [r["op"] for r in _requests(log)] == ["submit", "probe"]
+    assert "did not answer" in str(ei.value)

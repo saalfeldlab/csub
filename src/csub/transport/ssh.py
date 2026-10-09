@@ -6,6 +6,7 @@ import os
 import subprocess
 from typing import Any
 
+from csub.protocol import PROTOCOL_VERSION
 from csub.transport.base import TransportError, encode, finish
 
 
@@ -71,6 +72,35 @@ class SshTransport:
         argv += [self.host, self.broker_cmd]
         return argv
 
+    def _diagnose(self, request: dict[str, Any]) -> str:
+        """A silent exit 255 may be a dead proxy, or a connection lost after the broker read the
+        request. Never replay the request (a submit would run twice): send a probe verbosely and
+        report its outcome next to the warning that the original outcome is unknown."""
+        if request.get("op") == "submit":
+            head = (
+                f"ssh {self.host} failed; submission outcome is unknown. The request may have "
+                "reached the broker. Check csub status and bjobs -a before resubmitting."
+            )
+        else:
+            head = (
+                f"ssh {self.host} failed (exit status 255); the request may have reached "
+                "the broker."
+            )
+        try:
+            cp = subprocess.run(
+                self._argv(diagnose=True),
+                input=encode({"protocol": PROTOCOL_VERSION, "op": "probe"}),
+                capture_output=True,
+                text=True,
+                timeout=self.timeout_s,
+            )
+        except subprocess.TimeoutExpired:
+            return f"{head} Diagnostic probe did not answer within {self.timeout_s}s."
+        if cp.returncode == 0:
+            return f"{head} Diagnostic probe succeeded: the broker is reachable now."
+        tail = "\n".join(cp.stderr.strip().splitlines()[-5:]) or f"exit status {cp.returncode}"
+        return f"{head} Diagnostic probe failed: {tail}"
+
     def call(self, request: dict[str, Any]) -> dict[str, Any]:
         os.makedirs(self.control_dir, mode=0o700, exist_ok=True)
         try:
@@ -88,18 +118,7 @@ class SshTransport:
                 f"ssh to {self.host} did not answer within {self.timeout_s}s"
             ) from None
         if cp.returncode == 255 and not cp.stderr.strip():
-            try:
-                cp = subprocess.run(
-                    self._argv(diagnose=True),
-                    input=encode(request),
-                    capture_output=True,
-                    text=True,
-                    timeout=self.timeout_s,
-                )
-            except subprocess.TimeoutExpired:
-                raise TransportError(
-                    f"ssh to {self.host} did not answer within {self.timeout_s}s"
-                ) from None
+            raise TransportError(self._diagnose(request))
         if cp.returncode not in (0, 1) and "command not found" in cp.stderr:
             raise TransportError(
                 f"ssh {self.host}: {cp.stderr.strip().splitlines()[-1]}. The key is not bound to "
