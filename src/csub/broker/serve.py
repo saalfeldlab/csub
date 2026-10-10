@@ -20,6 +20,16 @@ from csub.protocol import LIMITS
 READ_TIMEOUT_S = 120.0
 
 
+def _listening(path: str) -> bool:
+    """True if a process accepts connections on the socket at path."""
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+        try:
+            probe.connect(path)
+        except OSError:  # missing, or a stale file nobody listens on
+            return False
+    return True
+
+
 def serve(
     path: str,
     handler: Callable[[bytes], dict],
@@ -29,8 +39,11 @@ def serve(
 ) -> int:
     import json
 
+    if _listening(path):
+        stderr.write(f"csub-broker --serve: a broker is already serving {path}\n")
+        return 1
     try:
-        os.unlink(path)
+        os.unlink(path)  # stale socket from a broker that died
     except FileNotFoundError:
         pass
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
