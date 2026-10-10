@@ -3,6 +3,13 @@
 Everything LSF-specific about *output formats* lives here so the rest of the broker deals
 in plain data. All commands are run through a bash wrapper that sources the LSF profile
 first (a forced SSH command has no login environment).
+
+With ``lsf.submit_host`` set, that same wrapper is run over ssh on the submit host, so the broker
+can sit on a workstation that shares the cluster filesystem but is not an LSF host. The LSF
+binaries and profile may well be visible there too (a shared /misc or /opt), so presence of
+files proves nothing; what matters is whether this host may talk to the cluster. Two cases are
+known to be fine and keep calling bsub directly: inside an LSF job (the per-job broker the
+wrapper starts on a compute node; LSF sets LSB_JOBID there), and on the submit host itself.
 """
 
 from __future__ import annotations
@@ -10,6 +17,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import socket
 import subprocess
 import sys
 from collections.abc import Callable
@@ -17,6 +25,7 @@ from dataclasses import dataclass
 
 from csub.broker.policy import LsfConfig
 from csub.protocol import CsubError
+from csub.transport.ssh import default_control_dir
 
 BSUB_SUBMITTED_RE = re.compile(r"Job <(\d+)> is submitted to (?:default )?queue <([^>]+)>\.")
 BSUB_BILLING_RE = re.compile(r"This job will be billed to (\S+)")
@@ -64,6 +73,16 @@ class BjobsRow:
         return STATE_MAP.get(self.stat, "UNKNOWN")
 
 
+def is_this_host(name: str) -> bool:
+    """True when ``name`` resolves to one of this machine's addresses (aliases included)."""
+    try:
+        theirs = {ai[4][0] for ai in socket.getaddrinfo(name, None)}
+        mine = {ai[4][0] for ai in socket.getaddrinfo(socket.gethostname(), None)}
+    except OSError:
+        return False
+    return bool(theirs & mine)
+
+
 def _tail(text: str, n: int = 20) -> str:
     lines = text.strip().splitlines()
     return "\n".join(lines[-n:])
@@ -81,6 +100,9 @@ class LsfRunner:
         self._run = run
         self._own_prefix = os.path.realpath(own_prefix or sys.prefix)
         self._checked: set[str] = set()
+        self._remote = bool(cfg.submit_host) and not (
+            "LSB_JOBID" in os.environ or is_this_host(cfg.submit_host)
+        )
 
     # --- plumbing ---
 
@@ -90,12 +112,29 @@ class LsfRunner:
             # Under sshd, bash sources ~/.bashrc even for `bash -c`; with lsf.norc the policy
             # can skip that (seconds per LSF call when .bashrc runs a conda hook or similar).
             bash = ["bash", "--noprofile", "--norc"] if self.cfg.norc else ["bash"]
-            return [*bash, "-c", script, tool, *args]
-        return [tool, *args]
+            local = [*bash, "-c", script, tool, *args]
+        else:
+            local = [tool, *args]
+        if not self._remote:
+            return local
+        # The user's own ~/.ssh config supplies user, key and known_hosts. One multiplexed
+        # connection serves every call, so polling costs one round trip, not one handshake.
+        control_dir = default_control_dir()
+        os.makedirs(control_dir, mode=0o700, exist_ok=True)
+        return [
+            "ssh", "-T",
+            "-o", "BatchMode=yes",
+            "-o", "ControlMaster=auto",
+            "-o", "ControlPersist=120",
+            "-o", f"ControlPath={control_dir}/cm-%C",
+            "-o", "ConnectTimeout=20",
+            "-o", "LogLevel=ERROR",
+            self.cfg.submit_host, shlex.join(local),
+        ]  # fmt: skip
 
     def _check_not_self(self, tool: str) -> None:
         """Refuse to call a `bsub` that lives in our own install prefix (a shim)."""
-        if tool in self._checked or "/" in tool:
+        if tool in self._checked or "/" in tool or self._remote:
             return
         self._checked.add(tool)
         try:
@@ -128,7 +167,7 @@ class LsfRunner:
                 timeout=self.cfg.timeout_s,
             )
         except FileNotFoundError as e:
-            raise LsfError(f"{tool}: not found ({e})") from None
+            raise LsfError(f"{self.argv(tool, [])[0]}: not found ({e})") from None
         except subprocess.TimeoutExpired:
             raise LsfError(f"{tool} did not finish within {self.cfg.timeout_s}s") from None
 

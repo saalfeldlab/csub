@@ -72,6 +72,7 @@ class LsfConfig:
     timeout_s: int = 120
     norc: bool = False  # run LSF commands via `bash --noprofile --norc`, skipping ~/.bashrc
     project: str = ""  # bsub -P, the lab or project every job is billed to
+    submit_host: str = ""  # run bsub/bjobs/bkill over ssh here when this machine has no LSF
 
 
 @dataclass(frozen=True)
@@ -172,6 +173,7 @@ _LSF_KEYS: dict[str, tuple[str, bool]] = {
     "timeout_s": ("int", False),
     "norc": ("bool", False),
     "project": ("str", False),
+    "submit_host": ("str", False),
 }
 _TOP_KEYS = {"broker", "limits", "queues", "lsf"}
 
@@ -409,7 +411,11 @@ def parse_policy(  # noqa: C901 - one validator
         script = os.path.join(scripts_dir, SANDBOX_SCRIPTS[sandbox])
         if not os.path.isfile(script) or not os.access(script, os.X_OK):
             raise PolicyError(f"{where}.sandbox_scripts_dir: {script} is missing or not executable")
-        if lsf_cfg.profile and not os.access(lsf_cfg.profile, os.R_OK):
+        if (
+            lsf_cfg.profile
+            and not lsf_cfg.submit_host  # the profile is sourced on the remote host
+            and not os.access(lsf_cfg.profile, os.R_OK)
+        ):
             raise PolicyError(f"{source}: lsf.profile: {lsf_cfg.profile} is not readable")
 
     return Policy(

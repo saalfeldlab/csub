@@ -71,6 +71,46 @@ def test_bsub_timeout_and_missing():
         lsf.bsub([], "x")
 
 
+def test_submit_host_runs_lsf_commands_remotely(monkeypatch):
+    """Every command becomes `ssh host <quoted local argv>`: the profile is sourced on the far
+    side and the bsub script still travels on stdin."""
+    monkeypatch.delenv("LSB_JOBID", raising=False)
+    r = Runner((0, JANELIA_BSUB_OUT, ""))
+    cfg = LsfConfig(profile="/no/such/profile.lsf", bsub="/x/bsub", submit_host="submit")
+    res = LsfRunner(cfg, run=r).bsub(["-q", "short"], "#!/bin/sh\n")
+    assert res.job_id == "1234"
+    argv, kw = r.calls[0]
+    assert argv[0] == "ssh" and argv[-2] == "submit" and "BatchMode=yes" in argv
+    assert argv[-1].startswith("bash -c ") and "/no/such/profile.lsf" in argv[-1]
+    assert argv[-1].endswith(" /x/bsub -q short")
+    assert kw["input"] == "#!/bin/sh\n"
+
+
+@pytest.mark.parametrize("where", ["inside_job", "on_submit_host"])
+def test_submit_host_ignored_where_lsf_is_local(monkeypatch, where):
+    """The per-job broker on a compute node and a broker on the submit host read the same
+    policy; both must call bsub directly. LSF files being visible proves nothing (shared NFS)."""
+    monkeypatch.delenv("LSB_JOBID", raising=False)
+    if where == "inside_job":
+        monkeypatch.setenv("LSB_JOBID", "123")
+    else:
+        monkeypatch.setattr("csub.broker.lsf.is_this_host", lambda name: name == "submit")
+    r = Runner((0, JANELIA_BSUB_OUT, ""))
+    cfg = LsfConfig(profile="/etc/profile.d/lsf.sh", bsub="/x/bsub", submit_host="submit")
+    LsfRunner(cfg, run=r).bsub([], "x")
+    argv, _ = r.calls[0]
+    assert argv[0] == "bash" and "ssh" not in argv and "submit" not in argv
+
+
+def test_is_this_host():
+    import socket
+
+    from csub.broker.lsf import is_this_host
+
+    assert is_this_host(socket.gethostname())
+    assert not is_this_host("no-such-host.invalid")
+
+
 def test_bjobs_rows():
     out = (
         "1|RUN|-|short|4*h01:4*h02|csub-a\n2|EXIT|3|gpu_l4|h03|csub-b\n"

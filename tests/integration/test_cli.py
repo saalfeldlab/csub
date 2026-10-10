@@ -43,7 +43,8 @@ def test_cli_roundtrip(cli, project_dir):
     )
     assert (
         cp.stdout.startswith("Job ")
-        and "submitted to short via podman (1 slot, 10 min, est. max $0.01) billed to testlab" in cp.stdout
+        and "submitted to short via podman (1 slot, 10 min, est. max $0.01) billed to testlab"
+        in cp.stdout
     )
     jid = cp.stdout.split()[1]
     cp = cli("wait", jid, "--timeout", "60")

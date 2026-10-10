@@ -31,7 +31,10 @@ csub CLI / MCP / Python ──ssh──▶ csub-broker ──bsub──▶ LSF �
   the request, renders a wrapper script, and calls `bsub`, `bjobs` or `bkill`.
 - **Transports.** `ssh` from the agent container (a key whose only allowed command is the
   broker), `local` for a person on the submit host, and `unix` from inside a job (a per-job
-  broker started by the wrapper; its socket is mounted into the job's container).
+  broker started by the wrapper; its socket is mounted into the job's container) or from a
+  sandbox started beside a host-side `csub-broker --serve`. A host-side broker on a machine
+  without LSF reaches the submit host itself (`submit_host` in the policy), so the sandbox needs
+  no ssh at all.
 - **Sandbox.** Jobs run in `podman-run.sh` from
   [agentic-sandbox](https://github.com/JaneliaScientificComputingSystems/agentic-sandbox),
   which handles rootless podman under LSF, GPUs, network isolation and cleanup.
@@ -49,7 +52,9 @@ csub CLI / MCP / Python ──ssh──▶ csub-broker ──bsub──▶ LSF �
 - LSF spools the job script at submit time, so it cannot be changed afterwards. Agent text may
   not contain `#BSUB` lines.
 - Environment variables are set inside the sandbox, never on the `bsub` command line.
-- The policy file lives outside every mount and is read on every request.
+- The policy file lives outside csub-managed job mounts and is read on every request. The
+  SSH client setup may expose it read-only through a shared home directory's config mount; see
+  [installation](deploy/INSTALL.md). The agent must never be able to modify it.
 
 ## Using it
 
@@ -199,6 +204,7 @@ gpu_price_usd_per_hour = 0.5
 profile = "/etc/profile.d/lsf.sh"         # sourced before bsub/bjobs/bkill
 norc = false                              # true: run LSF commands with bash --norc (skip ~/.bashrc)
 project = "mylab"                         # bsub -P: the lab or project jobs are billed to
+submit_host = ""                          # run LSF commands over ssh here, except on it or inside a job
 ```
 
 Slots are computed as `max(cpus, ceil(mem_mb / mem_per_slot_mb))`. Every job gets a walltime;

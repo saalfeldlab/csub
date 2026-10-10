@@ -187,6 +187,9 @@ def test_fs_checks(make_policy, scripts_dir, tmp_home):
     prof = tmp_home / "profile.sh"
     prof.write_text("")
     assert make_policy(lsf={"profile": str(prof)}).lsf.profile == str(prof)
+    # With submit_host the profile belongs to the remote host, so it need not exist here.
+    p = make_policy(lsf={"profile": str(tmp_home / "remote.sh"), "submit_host": "submit"})
+    assert p.lsf.submit_host == "submit"
 
 
 def test_lsf_extra_patterns_compile(make_policy):
