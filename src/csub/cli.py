@@ -107,6 +107,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument(
         "--scratch", action="store_true", help="private node-local scratch dir as TMPDIR"
     )
+    s.add_argument(
+        "--claude", action="store_true", help="run Claude Code in the job (policy permitting)"
+    )
     s.add_argument("--depends-on", action="append", default=[], metavar="ID[:done|ended|exit]")
     s.add_argument("--cwd")
     s.add_argument("--session")
@@ -152,7 +155,13 @@ def spec_from_args(ns: argparse.Namespace, stdin: TextIO) -> JobSpec:
     command = list(ns.command)
     if command and command[0] == "--":
         command = command[1:]
-    d: dict[str, Any] = {"cpus": ns.cpus, "gpus": ns.gpus, "scratch": ns.scratch, "shell": ns.shell}
+    d: dict[str, Any] = {
+        "cpus": ns.cpus,
+        "gpus": ns.gpus,
+        "scratch": ns.scratch,
+        "claude": ns.claude,
+        "shell": ns.shell,
+    }
     if ns.shell:
         if ns.script:
             body = stdin.read() if ns.script == "-" else open(ns.script).read()

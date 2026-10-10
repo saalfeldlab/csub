@@ -327,6 +327,18 @@ def test_execute_with_injected_client(make_spec, policy, ctx, exec_env, project_
     assert out.startswith("csub 0.1.0\n") and out.strip().endswith(client_src + "/__init__.py")
 
 
+def test_claude_flag(make_spec, make_policy, ctx):
+    from csub.broker.resolve import CLAUDE_HOSTS
+
+    p = make_policy(broker={"allow_claude": True, "allowed_hosts": list(CLAUDE_HOSTS)})
+    job = resolve(make_spec(claude=True), p, ctx)
+    text = render_wrapper(job, state_dir=STATE, scripts_dir=SCRIPTS, broker_cmd=BROKER, home="/h")
+    assert "\n    --claude \\\n" in text and "--allow api.anthropic.com" in text
+    assert "export PATH=/h/.local/bin:/usr/local/bin:/usr/bin:/bin " in text
+    plain = resolve(make_spec(), p, ctx)
+    assert "--claude" not in render_wrapper(
+        plain, state_dir=STATE, scripts_dir=SCRIPTS, broker_cmd=BROKER, home="/h"
+    )
 # --- bwrap backend ---------------------------------------------------------------------------
 
 

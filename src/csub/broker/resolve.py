@@ -29,6 +29,9 @@ RESERVED_ENV_KEYS = frozenset(
 )
 RESERVED_ENV_PREFIXES = ("LSB_", "LSF_", "CSUB_")
 
+# What Claude Code needs to reach; added to a job's allow_hosts when it asks for claude.
+CLAUDE_HOSTS = ("api.anthropic.com", "claude.ai", "platform.claude.com")
+
 # Flags the broker emits itself; passthrough of these would let the agent override policy.
 OWNED_BSUB_FLAGS = frozenset(
     {
@@ -110,6 +113,7 @@ class ResolvedJob:
     env: dict[str, str]
     allow_hosts: tuple[str, ...]
     scratch: bool
+    claude: bool
     scratch_root: str
     keep_id: bool
     sandbox: str  # "podman" or "bwrap"
@@ -147,6 +151,7 @@ class ResolvedJob:
             "mounts": [m.to_dict() for m in self.mounts],
             "allow_hosts": list(self.allow_hosts),
             "scratch": self.scratch,
+            "claude": self.claude,
             "name": self.name,
             "job_group": self.job_group,
             "session": self.session,
@@ -456,7 +461,9 @@ def resolve(spec: JobSpec, policy: Policy, ctx: ResolveContext) -> ResolvedJob:
         raise _policy("GPU jobs need podman but this broker runs jobs under bwrap (policy sandbox)")
     image = check_image(spec.image, policy, sandbox=sandbox)
     env = check_env(spec.env, policy)
-    hosts = check_hosts(spec.allow_hosts, policy)
+    if spec.claude and not policy.allow_claude:
+        raise _policy("claude is not permitted by policy")
+    hosts = check_hosts(spec.allow_hosts + (CLAUDE_HOSTS if spec.claude else ()), policy)
     if spec.scratch and not policy.scratch:
         raise _policy("scratch is not permitted by policy")
 
@@ -485,6 +492,7 @@ def resolve(spec: JobSpec, policy: Policy, ctx: ResolveContext) -> ResolvedJob:
         env=env,
         allow_hosts=hosts,
         scratch=spec.scratch,
+        claude=spec.claude,
         scratch_root=policy.scratch_root,
         keep_id=policy.keep_id,
         sandbox=sandbox,

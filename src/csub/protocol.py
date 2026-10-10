@@ -219,6 +219,7 @@ class JobSpec:
     env: dict[str, str] = field(default_factory=dict)
     allow_hosts: tuple[str, ...] = ()
     scratch: bool = False
+    claude: bool = False
     depends_on: tuple[Dependency, ...] = ()
     mounts: tuple[Mount, ...] = ()
     session: str | None = None
@@ -319,6 +320,7 @@ class JobSpec:
                     hosts.append(h)
 
         scratch = _bool(d.get("scratch", False), f"{where}.scratch")
+        claude = _bool(d.get("claude", False), f"{where}.claude")
 
         depends: list[Dependency] = []
         if "depends_on" in d:
@@ -365,6 +367,7 @@ class JobSpec:
             env=env,
             allow_hosts=tuple(hosts),
             scratch=scratch,
+            claude=claude,
             depends_on=tuple(depends),
             mounts=tuple(mounts),
             session=session,
@@ -379,6 +382,7 @@ class JobSpec:
             "mem_mb": self.mem_mb,
             "gpus": self.gpus,
             "scratch": self.scratch,
+            "claude": self.claude,
             "env": dict(self.env),
             "allow_hosts": list(self.allow_hosts),
             "depends_on": [x.to_dict() for x in self.depends_on],
@@ -546,6 +550,7 @@ class SubmitResult:
     mounts: list[dict[str, str]] = field(default_factory=list)
     allow_hosts: list[str] = field(default_factory=list)
     scratch: bool = False
+    claude: bool = False
     name: str = ""
     job_group: str = ""
     session: str = ""
@@ -615,6 +620,7 @@ class ProbeResult:
     allowed_hosts: list[str] = field(default_factory=list)
     scratch: bool = False
     keep_id: bool = True
+    allow_claude: bool = False
     sandbox: str = "podman"
     env_allow: list[str] = field(default_factory=list)
     lsf_extra_enabled: bool = False
@@ -737,6 +743,15 @@ JOBSPEC_SCHEMA: dict[str, Any] = {
         "scratch": {
             "description": (
                 "Give the job a private node-local scratch directory, exported as TMPDIR."
+            ),
+            "type": "boolean",
+            "default": False,
+        },
+        "claude": {
+            "description": (
+                "Run Claude Code inside the job: the CLI, the submitter's settings and "
+                "credentials are provided, and the Anthropic API hosts are added to allow_hosts. "
+                "Needs the policy's allow_claude (see csub_probe). For agents that start agents."
             ),
             "type": "boolean",
             "default": False,

@@ -23,7 +23,12 @@ allowed_hosts = [
   "files.pythonhosted.org",
   "github.com",
   "api.anthropic.com",
+  "claude.ai",
+  "platform.claude.com",
 ]
+# true lets a job run Claude Code with your login (agents starting agents); the three Anthropic
+# hosts above are what it needs.
+allow_claude = false
 scratch = true
 scratch_root = "/scratch"
 keep_id = true

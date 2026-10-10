@@ -90,6 +90,7 @@ class Policy:
     scratch_root: str = "/scratch"
     keep_id: bool = True
     inject_client: bool = True
+    allow_claude: bool = False  # jobs may run Claude Code with the submitter's credentials
     sandbox: str = "podman"  # bwrap cannot pass GPUs through: GPU requests are then refused
     env_allow: tuple[str, ...] = ()
     lsf_extra_allow: tuple[re.Pattern[str], ...] = ()
@@ -115,6 +116,7 @@ class Policy:
             "scratch": self.scratch,
             "keep_id": self.keep_id,
             "inject_client": self.inject_client,
+            "allow_claude": self.allow_claude,
             "sandbox": self.sandbox,
             "env_allow": list(self.env_allow),
             "lsf_extra_enabled": bool(self.lsf_extra_allow),
@@ -137,6 +139,7 @@ _BROKER_KEYS: dict[str, tuple[str, bool]] = {
     "scratch_root": ("str", False),
     "keep_id": ("bool", False),
     "inject_client": ("bool", False),
+    "allow_claude": ("bool", False),
     "sandbox": ("str", False),
     "env_allow": ("list[str]", False),
     "lsf_extra_allow": ("list[str]", False),
@@ -427,6 +430,7 @@ def parse_policy(  # noqa: C901 - one validator
         scratch_root=scratch_root,
         keep_id=b.get("keep_id", True),
         inject_client=b.get("inject_client", True),
+        allow_claude=b.get("allow_claude", False),
         sandbox=sandbox,
         env_allow=tuple(b.get("env_allow", [])),
         lsf_extra_allow=tuple(compiled),

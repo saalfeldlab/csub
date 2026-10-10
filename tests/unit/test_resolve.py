@@ -425,3 +425,20 @@ def test_policy_project(make_spec, ctx, make_policy):
     # without one, -P stays available through lsf_extra as before
     p = make_policy(broker={"lsf_extra_allow": [".*"]})
     assert resolve(make_spec(lsf_extra=["-P other"]), p, ctx).lsf_extra_argv == ("-P", "other")
+
+
+def test_claude_jobs(make_spec, policy, ctx, make_policy):
+    from csub.broker.resolve import CLAUDE_HOSTS
+
+    reject("policy_violation", "claude is not permitted", make_spec(claude=True), policy, ctx)
+    p = make_policy(broker={"allow_claude": True, "allowed_hosts": ["pypi.org", *CLAUDE_HOSTS]})
+    job = resolve(make_spec(claude=True, allow_hosts=["pypi.org"]), p, ctx)
+    assert (
+        job.claude and set(CLAUDE_HOSTS) <= set(job.allow_hosts) and "pypi.org" in job.allow_hosts
+    )
+    assert not resolve(make_spec(), p, ctx).claude
+    # allowed_claude without the hosts in the policy: the host check says what is missing
+    p2 = make_policy(broker={"allow_claude": True, "allowed_hosts": ["pypi.org"]})
+    reject(
+        "policy_violation", "api.anthropic.com is not permitted", make_spec(claude=True), p2, ctx
+    )
