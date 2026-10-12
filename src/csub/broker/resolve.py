@@ -110,6 +110,7 @@ class ResolvedJob:
     env: dict[str, str]
     allow_hosts: tuple[str, ...]
     scratch: bool
+    agent: str | None
     scratch_root: str
     keep_id: bool
     sandbox: str  # "podman" or "bwrap"
@@ -147,6 +148,7 @@ class ResolvedJob:
             "mounts": [m.to_dict() for m in self.mounts],
             "allow_hosts": list(self.allow_hosts),
             "scratch": self.scratch,
+            "agent": self.agent,
             "name": self.name,
             "job_group": self.job_group,
             "session": self.session,
@@ -457,6 +459,13 @@ def resolve(spec: JobSpec, policy: Policy, ctx: ResolveContext) -> ResolvedJob:
     image = check_image(spec.image, policy, sandbox=sandbox)
     env = check_env(spec.env, policy)
     hosts = check_hosts(spec.allow_hosts, policy)
+    if spec.agent:
+        if spec.agent not in policy.agents:
+            raise _policy(
+                f"agent {spec.agent} is not permitted by policy; allowed: "
+                + (", ".join(sorted(policy.agents)) or "(none)")
+            )
+        hosts = tuple(sorted(set(hosts) | set(policy.agents[spec.agent])))
     if spec.scratch and not policy.scratch:
         raise _policy("scratch is not permitted by policy")
 
@@ -485,6 +494,7 @@ def resolve(spec: JobSpec, policy: Policy, ctx: ResolveContext) -> ResolvedJob:
         env=env,
         allow_hosts=hosts,
         scratch=spec.scratch,
+        agent=spec.agent,
         scratch_root=policy.scratch_root,
         keep_id=policy.keep_id,
         sandbox=sandbox,

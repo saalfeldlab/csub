@@ -93,8 +93,8 @@ def test_submit_maps_flags(tmp_path):
     rc, out, _ = run(
         c, "submit", "--name", "n", "--cpus", "4", "--mem", "100G", "--gpus", "1",
         "--gpu-mem-gb", "40", "--walltime", "01:30", "-q", "gpu_short", "--image", "ghcr.io/a/b:1",
-        "--env", "A=1", "--env", "B=x=y", "--allow", "pypi.org", "--scratch", "--depends-on", "12",
-        "--depends-on", "13:ended", "--cwd", str(tmp_path),
+        "--env", "A=1", "--env", "B=x=y", "--allow", "pypi.org", "--scratch", "--agent", "claude",
+        "--depends-on", "12", "--depends-on", "13:ended", "--cwd", str(tmp_path),
         "--session", "s", "--lsf-extra", "-P proj", "--", "python", "train.py", "--lr", "0.1",
     )  # fmt: skip
     assert rc == 0 and out.startswith(
@@ -120,6 +120,7 @@ def test_submit_maps_flags(tmp_path):
     assert (
         spec.allow_hosts == ("pypi.org",) and spec.scratch and spec.cwd == str(tmp_path.resolve())
     )
+    assert spec.agent == "claude"
     assert [d.to_dict() for d in spec.depends_on] == [
         {"job_id": "12", "when": "done"},
         {"job_id": "13", "when": "ended"},

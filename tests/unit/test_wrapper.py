@@ -327,6 +327,17 @@ def test_execute_with_injected_client(make_spec, policy, ctx, exec_env, project_
     assert out.startswith("csub 0.1.0\n") and out.strip().endswith(client_src + "/__init__.py")
 
 
+def test_agent_flag(make_spec, make_policy, ctx):
+    p = make_policy(agents={"claude": ["api.anthropic.com"]})
+    job = resolve(make_spec(agent="claude"), p, ctx)
+    text = render_wrapper(job, state_dir=STATE, scripts_dir=SCRIPTS, broker_cmd=BROKER, home="/h")
+    assert "\n    --claude \\\n" in text and "--allow api.anthropic.com" in text
+    plain = resolve(make_spec(), p, ctx)
+    assert "--claude" not in render_wrapper(
+        plain, state_dir=STATE, scripts_dir=SCRIPTS, broker_cmd=BROKER, home="/h"
+    )
+
+
 # --- bwrap backend ---------------------------------------------------------------------------
 
 

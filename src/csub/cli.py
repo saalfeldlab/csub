@@ -107,6 +107,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument(
         "--scratch", action="store_true", help="private node-local scratch dir as TMPDIR"
     )
+    s.add_argument(
+        "--agent",
+        metavar="NAME",
+        help="run this agent harness in the job, e.g. claude (policy permitting)",
+    )
     s.add_argument("--depends-on", action="append", default=[], metavar="ID[:done|ended|exit]")
     s.add_argument("--cwd")
     s.add_argument("--session")
@@ -152,7 +157,13 @@ def spec_from_args(ns: argparse.Namespace, stdin: TextIO) -> JobSpec:
     command = list(ns.command)
     if command and command[0] == "--":
         command = command[1:]
-    d: dict[str, Any] = {"cpus": ns.cpus, "gpus": ns.gpus, "scratch": ns.scratch, "shell": ns.shell}
+    d: dict[str, Any] = {
+        "cpus": ns.cpus,
+        "gpus": ns.gpus,
+        "scratch": ns.scratch,
+        "agent": ns.agent,
+        "shell": ns.shell,
+    }
     if ns.shell:
         if ns.script:
             body = stdin.read() if ns.script == "-" else open(ns.script).read()
@@ -266,7 +277,8 @@ def format_probe(p, out: TextIO) -> None:
     out.write("allowed hosts: " + (", ".join(p.allowed_hosts) or "(none)") + "\n")
     out.write(
         f"sandbox: {p.sandbox}; scratch: {'yes' if p.scratch else 'no'}; "
-        f"env: {', '.join(p.env_allow) or '(none)'}\n"
+        f"env: {', '.join(p.env_allow) or '(none)'}; "
+        f"agents: {', '.join(p.agents) or '(none)'}\n"
     )
 
 
