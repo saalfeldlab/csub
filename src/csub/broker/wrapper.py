@@ -13,6 +13,10 @@ Wrapper-stage exit codes (so ``exit_code`` tells them apart from the command's):
   96  could not create the in-sandbox job dir / HOME
   97  could not create the broker-owned job dir
   98  could not create the scratch dir
+
+A job ended by a signal records the conventional code instead: 130 (INT), 141 (USR2, LSF's
+walltime warning), 143 (TERM, ``bkill`` and the walltime kill). ``exit_code`` is written only
+once the sandbox was actually launched; a wrapper-stage failure before that leaves no file.
 """
 
 from __future__ import annotations
@@ -159,7 +163,23 @@ def render_wrapper(
     lines += [
         f'{broker_cmd} --serve "$JOB_DIR/{SOCKET_NAME}" &',
         "BROKER_PID=$!",
-        "trap 'kill \"$BROKER_PID\" 2>/dev/null' EXIT",
+        # Everything that must happen at the end happens in ONE EXIT handler, and the fatal
+        # signals LSF sends (bkill: INT then TERM; walltime: USR2 then TERM, then KILL) are
+        # routed through it: sh runs no EXIT trap on an untrapped signal, so without these a
+        # killed job left the broker running until LSF swept the process group, left the
+        # scratch dir, and wrote no exit_code (status then showed UNKNOWN once bjobs forgot
+        # it). rc stays empty until the sandbox was launched or a signal arrived, so a
+        # wrapper-stage failure still records nothing, as before.
+        "rc=''",
+        "finish() {",
+        '    kill "$BROKER_PID" 2>/dev/null; wait "$BROKER_PID" 2>/dev/null',
+        '    [ -n "$SCRATCH" ] && rm -rf "$SCRATCH"',
+        '    [ -n "$rc" ] && echo "$rc" > "$JOB_DIR/exit_code"',
+        "}",
+        "trap finish EXIT",
+        "trap 'rc=143; exit 143' TERM",
+        "trap 'rc=130; exit 130' INT",
+        "trap 'rc=141; exit 141' USR2",
         f'i=0; while [ ! -S "$JOB_DIR/{SOCKET_NAME}" ]; do '
         f'i=$((i + 1)); [ "$i" -gt 100 ] && exit {EXIT_NO_BROKER}; sleep 0.1; done',
     ]
@@ -169,8 +189,6 @@ def render_wrapper(
     lines += [
         sandbox_run_line(job, scripts_dir=scripts_dir, inner=inner, client_src=client_src),
         "rc=$?",
-        '[ -n "$SCRATCH" ] && rm -rf "$SCRATCH"',
-        'echo "$rc" > "$JOB_DIR/exit_code"',
         'exit "$rc"',
     ]
     return "\n".join(lines) + "\n"

@@ -3,6 +3,7 @@
 import json
 import os
 import shlex
+import signal
 import stat
 import subprocess
 import sys
@@ -21,6 +22,7 @@ from csub.broker.wrapper import (
     render_inner,
     render_wrapper,
 )
+from tests.support.procs import wait_until
 
 STATE = "/home/u/.csub"
 SCRIPTS = "/home/u/.local/share/csub/agentic-sandbox/scripts"
@@ -75,9 +77,15 @@ def test_wrapper_structure(render):
     assert f'{BROKER} --serve "$JOB_DIR/csub.sock" &' in text
     assert "--keep-id" in text and "--gpu" in text and "--allow pypi.org" in text
     assert '--rw "$SCRATCH"' in text and '--ro "$JOB_DIR/csub.sock"' in text
-    assert text.rstrip().endswith(
-        '[ -n "$SCRATCH" ] && rm -rf "$SCRATCH"\necho "$rc" > "$JOB_DIR/exit_code"\nexit "$rc"'
-    )
+    assert text.rstrip().endswith('rc=$?\nexit "$rc"')
+    # One EXIT handler does the broker kill, scratch removal and exit_code write, and the
+    # signals LSF sends are routed through it.
+    assert "trap finish EXIT" in text
+    for sig, code in (("TERM", 143), ("INT", 130), ("USR2", 141)):
+        assert f"trap 'rc={code}; exit {code}' {sig}" in text
+    finish = text[text.index("finish() {") : text.index("trap finish EXIT")]
+    assert 'kill "$BROKER_PID"' in finish and 'rm -rf "$SCRATCH"' in finish
+    assert '[ -n "$rc" ] && echo "$rc" > "$JOB_DIR/exit_code"' in finish
     assert "#BSUB" not in text
     # env values live only inside the single-quoted inner script, never on the podman line
     assert text.count("export OMP_NUM_THREADS") == 0  # not requested here
@@ -281,6 +289,50 @@ def test_execute_sandbox_failure_propagates(make_spec, policy, ctx, exec_env):
     job = resolve(make_spec(), policy, ctx)
     r, job_dir, _ = exec_env(job, job_id="48", env_extra={"CSUB_FAKE_SANDBOX_FAIL_RC": "125"})
     assert r.returncode == 125 and (job_dir / "exit_code").read_text() == "125\n"
+
+
+def test_execute_killed_job_records_exit_code_and_cleans_up(
+    make_spec, policy, ctx, exec_env, roots, fake_sandbox
+):
+    """bkill / walltime: LSF signals the job's process group. The sandbox dies, the wrapper's
+    deferred TERM trap runs, and the EXIT handler must still kill the broker, remove the
+    scratch dir and record 143 -- none of which happened before the traps existed."""
+    job = resolve(make_spec(command=["sleep", "30"], scratch=True), policy, ctx)
+    text = render_wrapper(
+        job,
+        state_dir=str(exec_env.state_dir),
+        scripts_dir=str(exec_env.scripts_dir),
+        broker_cmd=shlex.quote(str(exec_env.fake_broker)),
+        home=str(exec_env.home),
+    )
+    script = exec_env.home.parent / "wrapper-kill.sh"
+    script.write_text(text)
+    job_dir = exec_env.state_dir / "jobs" / "49"
+    scratch = roots.scratch_root / ctx.user / "csub" / "49"
+    env = {"PATH": "/usr/bin:/bin", "LSB_JOBID": "49", "LSB_DJOB_NUMPROC": "1", "LC_ALL": "C"}
+    proc = subprocess.Popen(
+        ["sh", str(script)],
+        env={**env, **fake_sandbox.env()},
+        start_new_session=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        wait_until(
+            lambda: scratch.is_dir() and (job_dir / "csub.sock").exists(),
+            timeout=20,
+            what="wrapper to start the broker and the sandbox",
+        )
+        time.sleep(0.5)
+        os.killpg(proc.pid, signal.SIGTERM)
+        rc = proc.wait(timeout=20)
+    finally:
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGKILL)
+    assert rc == 143, proc.stderr.read()
+    assert (job_dir / "exit_code").read_text() == "143\n"
+    assert not scratch.exists(), "scratch must be removed on the kill path too"
 
 
 def test_exit_code_constants_are_distinct():

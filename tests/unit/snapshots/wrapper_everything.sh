@@ -7,7 +7,16 @@ SCRATCH=''
 SCRATCH=<P2>/testuser/csub/"$LSB_JOBID"; mkdir -p "$SCRATCH" || exit 98
 /home/u/.local/pipx/venvs/csub/bin/python -m csub.broker --serve "$JOB_DIR/csub.sock" &
 BROKER_PID=$!
-trap 'kill "$BROKER_PID" 2>/dev/null' EXIT
+rc=''
+finish() {
+    kill "$BROKER_PID" 2>/dev/null; wait "$BROKER_PID" 2>/dev/null
+    [ -n "$SCRATCH" ] && rm -rf "$SCRATCH"
+    [ -n "$rc" ] && echo "$rc" > "$JOB_DIR/exit_code"
+}
+trap finish EXIT
+trap 'rc=143; exit 143' TERM
+trap 'rc=130; exit 130' INT
+trap 'rc=141; exit 141' USR2
 i=0; while [ ! -S "$JOB_DIR/csub.sock" ]; do i=$((i + 1)); [ "$i" -gt 100 ] && exit 93; sleep 0.1; done
 /home/u/.local/share/csub/agentic-sandbox/scripts/podman-run.sh \
     --keep-id \
@@ -40,6 +49,4 @@ echo "it'"'"'"'"'"'"'"'"'s $HOME"
 exec "$J/script" >"$J/stdout" 2>"$J/stderr"
 ' csub-job "$LSB_JOBID" "${CUDA_VISIBLE_DEVICES:-}" "$SCRATCH" "${LSB_DJOB_NUMPROC:-}" "$(date +%s)" "$JOB_DIR/csub.sock"
 rc=$?
-[ -n "$SCRATCH" ] && rm -rf "$SCRATCH"
-echo "$rc" > "$JOB_DIR/exit_code"
 exit "$rc"
