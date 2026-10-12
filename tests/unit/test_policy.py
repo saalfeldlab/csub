@@ -26,6 +26,14 @@ def test_janelia_policy_parses(tmp_home):
     assert p.state_dir == str(tmp_home / ".csub")  # ~ expanded against the injected home
 
 
+def test_pending_cap_defaults_on_and_can_be_disabled(make_policy):
+    # Every other limit is per job; the pending cap is the only bound on a loop that keeps
+    # resubmitting itself, so a policy that does not mention it must still have one.
+    assert make_policy().limits.max_pending_per_session == 100
+    assert make_policy(limits={"max_pending_per_session": 0}).limits.max_pending_per_session == 0
+    assert make_policy(limits={"max_pending_per_session": 7}).limits.max_pending_per_session == 7
+
+
 def test_fixture_policy_loads_and_probe_summary(policy):
     s = policy.probe_summary()
     assert s["queues"]["short"]["mem_per_slot_mb"] == 15360

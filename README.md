@@ -53,6 +53,9 @@ csub CLI / MCP / Python ─unix──▶ csub-broker ──bsub──▶ LSF ─
   not contain `#BSUB` lines.
 - Environment variables are set inside the sandbox, never on the `bsub` command line.
 - The policy file lives outside every mount and is read on every request.
+- A session may not have more than `max_pending_per_session` jobs pending at once (default
+  100). The other limits are per job; this is the one that bounds a loop that keeps
+  resubmitting itself.
 - Checks happen only in the broker, on an LSF host. `csub relay` forwards requests unchanged.
 
 ## Using it
@@ -180,6 +183,7 @@ max_slots = 64
 max_gpus = 4
 max_walltime_min = 2880
 max_estimated_cost_usd = 50               # per job; 0 = no cap
+max_pending_per_session = 100             # pending jobs per session before submit is refused; 0 = no cap
 slot_price_usd_per_hour = 0.05
 cpu_short_queue = "short"                 # used when walltime fits its maximum
 cpu_default_queue = "long"

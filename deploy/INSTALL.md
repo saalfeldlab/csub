@@ -59,6 +59,7 @@ max_slots = 64
 max_gpus = 4
 max_walltime_min = 2880
 max_estimated_cost_usd = 50
+max_pending_per_session = 100
 slot_price_usd_per_hour = 0.05
 cpu_short_queue = "short"
 cpu_default_queue = "long"

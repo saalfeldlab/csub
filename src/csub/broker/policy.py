@@ -55,7 +55,11 @@ class Limits:
     max_gpus: int = 8
     max_walltime_min: int = 20160
     max_estimated_cost_usd: float = 200.0
-    max_pending_per_session: int = 0
+    # Jobs a session may have PENDING at once before submit is refused; 0 disables the cap.
+    # Every other limit is per job, so this is the one bound on a loop that keeps
+    # resubmitting (a job queueing its own successor is a supported pattern). The default is
+    # deliberately generous: a wide parameter sweep fits, a runaway does not.
+    max_pending_per_session: int = 100
     default_cpu_walltime_min: int = 60
     default_gpu_walltime_min: int = 120
     cpu_short_queue: str = "short"
