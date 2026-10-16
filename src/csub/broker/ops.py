@@ -13,7 +13,7 @@ from csub.broker.lsf import LsfRunner
 from csub.broker.policy import Policy
 from csub.broker.resolve import ResolveContext, ResolveError, resolve
 from csub.broker.state import META_NAME, REQUEST_NAME, WRAPPER_NAME, JobRecord, StateDir
-from csub.broker.wrapper import render_wrapper
+from csub.broker.wrapper import check_no_directives, render_wrapper
 from csub.protocol import PROTOCOL_VERSION, CsubError, Request, ok_response
 
 
@@ -75,6 +75,7 @@ def op_submit(req: Request, ctx: BrokerContext) -> dict:
         home=ctx.home,
         client_src=client_source_dir() if ctx.policy.inject_client else None,
     )
+    check_no_directives(wrapper)
     token, pdir = ctx.state.new_pending()
     try:
         ctx.state.write_private(

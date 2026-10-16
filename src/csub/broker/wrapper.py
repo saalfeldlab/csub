@@ -23,6 +23,7 @@ import shlex
 from csub import __version__
 from csub.broker.policy import SANDBOX_SCRIPTS
 from csub.broker.resolve import ResolvedJob
+from csub.protocol import CsubError, contains_bsub_directive
 
 SOCKET_NAME = "csub.sock"
 EXIT_NO_BROKER = 93
@@ -125,6 +126,13 @@ def sandbox_run_line(
         f'"$(date +%s)" "$JOB_DIR/{SOCKET_NAME}"'
     )
     return " \\\n    ".join(segments)
+
+
+def check_no_directives(wrapper: str) -> None:
+    """Backstop for the per-field checks in resolve: whatever reaches the spooled script, LSF
+    reads any ``#BSUB`` line in it as a submission option, so refuse the whole render."""
+    if contains_bsub_directive(wrapper):
+        raise CsubError("invalid_request", "rendered job script contains a #BSUB line")
 
 
 def render_wrapper(

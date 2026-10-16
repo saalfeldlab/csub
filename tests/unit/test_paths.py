@@ -9,6 +9,10 @@ def test_normalize_abs():
         normalize_abs("relative/path")
     with pytest.raises(ValueError):
         normalize_abs("/a\0b")
+    # a newline in a path would start a new line in the spooled job script
+    for bad in ("/a\n#BSUB -E x/b", "/a\rb", "/a\tb"):
+        with pytest.raises(ValueError, match="control character"):
+            normalize_abs(bad)
 
 
 def test_is_under():

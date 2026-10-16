@@ -139,12 +139,12 @@ def parse_bsub_argv(argv: list[str]) -> tuple[dict, list[str]]:
 
 def extract_directives(script: str) -> list[str]:
     out: list[str] = []
+    # Like bsub: embedded options are honoured anywhere in the script, not only in a header
+    # block before the first command (unlike Slurm's #SBATCH). Verified against LSF 10.1 on
+    # the Janelia cluster, 2026-10-16: a held job whose only `#BSUB -J` came after an `echo`
+    # was named by it. Command-line options still override embedded ones.
     for line in script.splitlines():
         s = line.strip()
-        if not s:
-            continue
-        if not s.startswith("#"):
-            break
         m = re.match(r"^#\s*BSUB\s+(.*)$", s)
         if m:
             out += shlex.split(m.group(1))

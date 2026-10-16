@@ -355,6 +355,17 @@ def test_bsub_directive_injection(make_spec, policy, ctx):
     assert resolve(make_spec(command=["echo", "x #BSUB y"]), policy, ctx)
 
 
+def test_bsub_directive_in_paths_is_rejected(make_spec, project_dir):
+    """cwd and mount paths reach the wrapper as shell-quoted strings; a newline inside the
+    quotes still starts a new line that LSF scans for #BSUB. Refused at the protocol layer."""
+    evil = f"{project_dir}/x\n#BSUB -E /tmp/pwn.sh\ny"
+    with pytest.raises(CsubError, match="control character") as e:
+        make_spec(cwd=evil)
+    assert e.value.code == "invalid_request"
+    with pytest.raises(CsubError, match="control character"):
+        make_spec(mounts=[{"path": evil, "mode": "rw"}])
+
+
 def test_depends_on(make_spec, policy, ctx):
     reject("not_found", "dependency 12", make_spec(depends_on=["12"]), policy, ctx)
     known = {

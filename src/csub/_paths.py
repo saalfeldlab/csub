@@ -10,8 +10,14 @@ def normalize_abs(path: str) -> str:
     """Return ``os.path.normpath(path)``; raise ``ValueError`` unless ``path`` is absolute."""
     if not isinstance(path, str) or not path.startswith("/"):
         raise ValueError(f"not an absolute path: {path!r}")
-    if "\0" in path:
-        raise ValueError("path contains NUL")
+    if any(ord(c) < 32 for c in path):
+        # Paths are written into the wrapper script that bsub reads from stdin. A newline
+        # there starts a new line that LSF reads as a #BSUB directive; a carriage return is a
+        # line end to some tools and invisible in others; a NUL truncates C strings; the rest
+        # (tab, escape, backspace...) have no place in a directory name and would only make a
+        # log or an error message lie about what the path was. No real mount or cwd contains
+        # any of them, so the whole range is refused rather than listing the dangerous ones.
+        raise ValueError("path contains a control character")
     return os.path.normpath(path)
 
 

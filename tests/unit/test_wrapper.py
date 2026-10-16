@@ -17,10 +17,12 @@ from csub.broker.wrapper import (
     EXIT_INNER_MKDIR,
     EXIT_NO_BROKER,
     EXIT_SCRIPT_WRITE,
+    check_no_directives,
     mounts_env_value,
     render_inner,
     render_wrapper,
 )
+from csub.protocol import CsubError
 
 STATE = "/home/u/.csub"
 SCRIPTS = "/home/u/.local/share/csub/agentic-sandbox/scripts"
@@ -81,6 +83,17 @@ def test_wrapper_structure(render):
     assert "#BSUB" not in text
     # env values live only inside the single-quoted inner script, never on the podman line
     assert text.count("export OMP_NUM_THREADS") == 0  # not requested here
+
+
+def test_whole_wrapper_directive_backstop(render):
+    """Whatever field slips past resolve, the rendered script is scanned before bsub."""
+    _, text, _ = render(command="echo a\necho '#BSUB' b\n", shell=True)
+    check_no_directives(text)  # "#BSUB" mid-line is not a directive
+    with pytest.raises(CsubError, match="#BSUB") as e:
+        check_no_directives(text + "#BSUB -E /tmp/pwn.sh\n")
+    assert e.value.code == "invalid_request"
+    with pytest.raises(CsubError):
+        check_no_directives("#!/bin/sh\n  #  BSUB -q x\necho\n")
 
 
 def test_no_scratch_no_gpu_no_allow(render):
