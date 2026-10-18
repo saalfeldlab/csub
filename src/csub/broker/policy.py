@@ -30,6 +30,8 @@ class PolicyError(CsubError):
 
 SANDBOX_SCRIPTS = {"podman": "podman-run.sh", "bwrap": "sandbox-run.sh"}
 SANDBOXES = tuple(SANDBOX_SCRIPTS)
+# Launcher modes a job may ask for as `agent`; each is a --<mode> flag of both scripts.
+AGENT_MODES = ("claude", "opencode")
 
 # bsub flags that no policy can grant through lsf_extra_allow. These run a command or read a
 # file outside the sandbox, as the user: pre/post-execution, login shell, file transfer, the
@@ -128,6 +130,7 @@ class Policy:
     max_name_len: int = 64
     limits: Limits = field(default_factory=Limits)
     queues: dict[str, QueuePolicy] = field(default_factory=dict)
+    agents: dict[str, tuple[str, ...]] = field(default_factory=dict)  # mode -> hosts it needs
     lsf: LsfConfig = field(default_factory=LsfConfig)
 
     def queue(self, name: str) -> QueuePolicy | None:
@@ -146,6 +149,7 @@ class Policy:
             "scratch": self.scratch,
             "keep_id": self.keep_id,
             "inject_client": self.inject_client,
+            "agents": sorted(self.agents),
             "sandbox": self.sandbox,
             "env_allow": list(self.env_allow),
             "lsf_extra_enabled": bool(self.lsf_extra_allow),
@@ -204,7 +208,7 @@ _LSF_KEYS: dict[str, tuple[str, bool]] = {
     "norc": ("bool", False),
     "project": ("str", False),
 }
-_TOP_KEYS = {"broker", "limits", "queues", "lsf"}
+_TOP_KEYS = {"broker", "limits", "queues", "lsf", "agents"}
 
 _QUEUE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _ENV_PATTERN_RE = re.compile(r"^[A-Za-z_*?][A-Za-z0-9_*?]*$")
@@ -250,6 +254,12 @@ def _expand(path: str, home: str, where: str) -> str:
         return normalize_abs(path)
     except ValueError as e:
         raise PolicyError(f"{where}: {e}") from None
+
+
+def _check_hosts(hosts: list[str], where: str) -> None:
+    for h in hosts:
+        if not h or any(c.isspace() for c in h) or h != h.lower():
+            raise PolicyError(f"{where}: invalid hostname pattern {h!r}")
 
 
 def _positive(d: dict[str, Any], key: str, where: str, *, minimum: int | float = 1) -> None:
@@ -336,9 +346,7 @@ def parse_policy(  # noqa: C901 - one validator
             f"{where}.sandbox: expected one of {', '.join(SANDBOXES)}, got {sandbox!r}"
         )
 
-    for h in b.get("allowed_hosts", []):
-        if not h or any(c.isspace() for c in h) or h != h.lower():
-            raise PolicyError(f"{where}.allowed_hosts: invalid hostname pattern {h!r}")
+    _check_hosts(b.get("allowed_hosts", []), f"{where}.allowed_hosts")
 
     for pat in b.get("env_allow", []):
         if not _ENV_PATTERN_RE.match(pat):
@@ -455,6 +463,19 @@ def parse_policy(  # noqa: C901 - one validator
                 f"{label}: {d} lies under allowed root {hit[0]} but not under $HOME; "
                 "an agent could write to it"
             )
+    # --- agents: [agents] <mode> = [hosts] ---
+    raw_agents = data.get("agents", {})
+    if not isinstance(raw_agents, dict):
+        raise PolicyError(f"{source}: [agents] must be a table")
+    agents: dict[str, tuple[str, ...]] = {}
+    for mode, hosts in raw_agents.items():
+        if mode not in AGENT_MODES:
+            raise PolicyError(f"{source}: agents.{mode}: expected one of {', '.join(AGENT_MODES)}")
+        _check_hosts(
+            _check_type(hosts, "list[str]", f"{source}: agents.{mode}"), f"{source}: agents.{mode}"
+        )
+        agents[mode] = tuple(hosts)
+
     if check_fs:
         script = os.path.join(scripts_dir, SANDBOX_SCRIPTS[sandbox])
         if not os.path.isfile(script) or not os.access(script, os.X_OK):
@@ -484,5 +505,6 @@ def parse_policy(  # noqa: C901 - one validator
         max_name_len=max_name_len,
         limits=limits,
         queues=queues,
+        agents=agents,
         lsf=lsf_cfg,
     )

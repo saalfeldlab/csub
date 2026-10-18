@@ -122,6 +122,8 @@ def sandbox_run_line(
         segments.append(f"--ro {q(client_src)}")
     if podman and job.gpus:
         segments.append("--gpu")
+    if job.agent:
+        segments.append(f"--{job.agent}")  # the launcher binds its CLI, config copy, credentials
     segments += _allow_flags(job.allow_hosts)
     segments.append(
         f"-- /bin/sh -c {q(inner)} csub-job "
