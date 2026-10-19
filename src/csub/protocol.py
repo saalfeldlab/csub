@@ -222,6 +222,7 @@ class JobSpec:
     env: dict[str, str] = field(default_factory=dict)
     allow_hosts: tuple[str, ...] = ()
     scratch: bool = False
+    agent: str | None = None  # a launcher agent mode ("claude", "opencode"); policy-gated
     depends_on: tuple[Dependency, ...] = ()
     mounts: tuple[Mount, ...] = ()
     session: str | None = None
@@ -322,6 +323,9 @@ class JobSpec:
                     hosts.append(h)
 
         scratch = _bool(d.get("scratch", False), f"{where}.scratch")
+        agent = None
+        if d.get("agent") is not None:
+            agent = _str(d["agent"], f"{where}.agent", min_len=1, max_len=32)
 
         depends: list[Dependency] = []
         if "depends_on" in d:
@@ -368,6 +372,7 @@ class JobSpec:
             env=env,
             allow_hosts=tuple(hosts),
             scratch=scratch,
+            agent=agent,
             depends_on=tuple(depends),
             mounts=tuple(mounts),
             session=session,
@@ -382,6 +387,7 @@ class JobSpec:
             "mem_mb": self.mem_mb,
             "gpus": self.gpus,
             "scratch": self.scratch,
+            "agent": self.agent,
             "env": dict(self.env),
             "allow_hosts": list(self.allow_hosts),
             "depends_on": [x.to_dict() for x in self.depends_on],
@@ -551,6 +557,7 @@ class SubmitResult:
     mounts: list[dict[str, str]] = field(default_factory=list)
     allow_hosts: list[str] = field(default_factory=list)
     scratch: bool = False
+    agent: str | None = None
     name: str = ""
     job_group: str = ""
     session: str = ""
@@ -620,6 +627,7 @@ class ProbeResult:
     allowed_hosts: list[str] = field(default_factory=list)
     scratch: bool = False
     keep_id: bool = True
+    agents: list[str] = field(default_factory=list)  # agent modes jobs may request
     sandbox: str = "podman"
     env_allow: list[str] = field(default_factory=list)
     lsf_extra_enabled: bool = False
@@ -746,6 +754,15 @@ JOBSPEC_SCHEMA: dict[str, Any] = {
             ),
             "type": "boolean",
             "default": False,
+        },
+        "agent": {
+            "description": (
+                'Run an agent harness inside the job, e.g. "claude" for Claude Code: its CLI, '
+                "a throwaway copy of the submitter's settings and the credentials are provided, "
+                "and the hosts it needs are added to allow_hosts. Must be one of the names "
+                "csub_probe lists under agents. For agents that start agents."
+            ),
+            "type": "string",
         },
         "depends_on": {
             "description": (

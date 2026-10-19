@@ -144,6 +144,7 @@ Policy rejections come back as tool errors, so the agent can fix its request.
 | `env`          | environment variables; names must be allowed by the policy         |
 | `allow_hosts`  | hosts the job may reach over HTTP(S); default none                 |
 | `scratch`      | private node-local scratch directory as `TMPDIR`                   |
+| `agent`        | run an agent harness in the job, e.g. `claude`; see `[agents]` in the policy |
 | `depends_on`   | job ids, or `{job_id, when}` with `when` = `done`, `ended`, `exit` |
 | `mounts`       | `{path, mode}`; filled in by the client from `CSUB_MOUNTS`         |
 | `session`      | job group; filled in by the client                                 |
@@ -184,6 +185,13 @@ allowed_hosts  = ["pypi.org", "files.pythonhosted.org"]  # globs allowed; "*" al
 env_allow      = ["OMP_NUM_THREADS"]
 lsf_extra_allow = []                      # bsub flags jobs may add, e.g. ["-R", "-sp"] or
                                           # ["-R select\\[\\w+\\]"] (flag, then a regex for its value)
+
+# Agents starting agents: a job may request `agent = "<mode>"`; the launcher then binds that
+# harness's CLI, a throwaway copy of the submitter's settings and the credentials file, and the
+# listed hosts are added to the job's allow_hosts. Modes: claude, opencode. Omit to refuse.
+# Only the bwrap launcher binds the CLI from $HOME; under podman the image must ship it.
+[agents]
+claude = ["api.anthropic.com", "claude.ai", "platform.claude.com"]
 
 [limits]
 max_slots = 64

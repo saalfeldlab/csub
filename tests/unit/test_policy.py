@@ -78,6 +78,16 @@ def test_types(make_policy):
     _reject(make_policy, "expected str", broker={"default_image": 1})
 
 
+def test_agents(make_policy):
+    p = make_policy(agents={"claude": ["api.anthropic.com"]})
+    assert p.agents == {"claude": ("api.anthropic.com",)} and p.probe_summary()["agents"] == [
+        "claude"
+    ]
+    _reject(make_policy, "expected one of claude, opencode", agents={"cursor": []})
+    _reject(make_policy, "expected list", agents={"claude": "api.anthropic.com"})
+    _reject(make_policy, "invalid hostname", agents={"claude": ["Api.Anthropic.com"]})
+
+
 def test_required(policy_dict, tmp_home):
     del policy_dict["broker"]["default_image"]
     with pytest.raises(PolicyError, match="default_image is required"):

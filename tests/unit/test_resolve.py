@@ -493,3 +493,26 @@ def test_policy_project(make_spec, ctx, make_policy):
     assert resolve(make_spec(lsf_extra=["-P other"]), p, ctx).lsf_extra_argv == ("-P", "other")
     p = make_policy(broker={"lsf_extra_allow": ["-R"]})
     reject("policy_violation", "not permitted", make_spec(lsf_extra=["-P other"]), p, ctx)
+
+
+def test_agent_jobs(make_spec, policy, ctx, make_policy):
+    reject(
+        "policy_violation", "agent claude is not permitted", make_spec(agent="claude"), policy, ctx
+    )
+    hosts = ["api.anthropic.com", "claude.ai"]
+    p = make_policy(agents={"claude": hosts}, broker={"allowed_hosts": ["pypi.org"]})
+    job = resolve(make_spec(agent="claude", allow_hosts=["pypi.org"]), p, ctx)
+    # the agent's hosts come from its policy entry, not from allowed_hosts
+    assert job.agent == "claude" and job.allow_hosts == (
+        "api.anthropic.com",
+        "claude.ai",
+        "pypi.org",
+    )
+    assert resolve(make_spec(), p, ctx).agent is None
+    reject(
+        "policy_violation",
+        "agent opencode is not permitted by policy; allowed: claude",
+        make_spec(agent="opencode"),
+        p,
+        ctx,
+    )
