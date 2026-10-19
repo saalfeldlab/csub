@@ -217,6 +217,54 @@ def test_child_jobs_stay_inside_the_parent(
     broker.ok({"protocol": 1, "op": "kill", "job_ids": [parent["job_id"], other]})
 
 
+def test_top_level_envelope(broker, project_dir, roots):
+    """--envelope-* bounds a top-level broker to the client sandbox's mounts and hosts."""
+    from tests.integration.conftest import Broker
+
+    env = Broker(
+        broker.cmd
+        + ["--envelope-mount", f"{project_dir}:rw", "--envelope-mount", f"{roots.nrs}:ro"]
+        + ["--envelope-host", "pypi.org"],
+        broker.env,
+    )
+    elsewhere = roots.allowed / "elsewhere"
+    elsewhere.mkdir()
+    sub = project_dir / "sub"
+    sub.mkdir()
+
+    def req(**fields):
+        job = {
+            "command": ["true"],
+            "cwd": str(project_dir),
+            "mounts": [
+                {"path": str(project_dir), "mode": "rw"},
+                {"path": str(roots.nrs), "mode": "ro"},
+            ],
+            "session": "anysess",
+            "allow_hosts": ["pypi.org"],
+            **fields,
+        }
+        return {"protocol": 1, "op": "submit", "job": job}
+
+    pv = "policy_violation"
+    probe = env.ok({"protocol": 1, "op": "probe"})
+    assert probe["allowed_roots"] == [str(project_dir), str(roots.nrs)]
+    assert probe["readonly_roots"] == [str(roots.nrs)]
+    assert probe["allowed_hosts"] == ["pypi.org"]
+    assert "default_image" in probe  # not narrowed: a top-level envelope has no image
+    assert (
+        env.ok(req(cwd=str(sub), mounts=[{"path": str(sub), "mode": "rw"}]))["session"] == "anysess"
+    )
+    wider = req(mounts=[{"path": str(project_dir), "mode": "rw"}, {"path": str(elsewhere)}])
+    assert "outside the parent" in env.error(wider, pv)["message"]
+    rw = {"path": str(project_dir), "mode": "rw"}
+    upgraded = req(mounts=[rw, {"path": str(roots.nrs), "mode": "rw"}])
+    assert "read-only in the parent" in env.error(upgraded, pv)["message"]
+    assert "not allowed in the parent" in env.error(req(allow_hosts=["github.com"]), pv)["message"]
+    # the same request through the unbounded broker is fine: the envelope is what refused it
+    assert broker.ok(wider)
+
+
 def test_kill_session(broker, submit):
     ids = [submit(["sleep", "30"])["job_id"] for _ in range(2)]
     for jid in ids:

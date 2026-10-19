@@ -121,7 +121,11 @@ def _records_for(req: Request, ctx: BrokerContext) -> dict[str, JobRecord]:
         if (
             rec is None
             or rec.user != ctx.user
-            or (ctx.parent is not None and rec.session != ctx.parent.session)
+            or (
+                ctx.parent is not None
+                and ctx.parent.session is not None
+                and rec.session != ctx.parent.session
+            )
         ):
             missing.append(jid)
         else:
@@ -212,7 +216,11 @@ OPS = {"submit": op_submit, "status": op_status, "kill": op_kill, "probe": op_pr
 
 
 def handle(req: Request, ctx: BrokerContext) -> dict:
-    if ctx.parent is not None and req.session not in (None, ctx.parent.session):
+    if (
+        ctx.parent is not None
+        and ctx.parent.session is not None
+        and req.session not in (None, ctx.parent.session)
+    ):
         raise CsubError(
             "policy_violation", f"session {req.session!r}: child jobs stay in the parent's session"
         )

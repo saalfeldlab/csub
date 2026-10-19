@@ -148,6 +148,13 @@ broker confines child jobs to the parent's mounts, hosts, image and session. Wit
 `csub` on `PATH`. That needs `python3` 3.9 or newer in the image; both agentic-sandbox images
 have it.
 
+A broker you start yourself for a sandboxed client (`csub-broker --serve SOCKET`) has no parent
+job. Give it the sandbox's own mounts and hosts with `--envelope-mount PATH[:ro|rw]` and
+`--envelope-host HOST` (both repeatable) and it applies the same check to every request: mounts
+inside the envelope, no read-only to read-write upgrade, hosts among those listed (none, if no
+host is given). Image and session are not bounded. Without these flags the policy is the only
+bound.
+
 ### 4.2 ssh access to the broker
 
 The client runs `csub-broker` on the submit host over ssh, with a key that can run nothing else.
