@@ -142,7 +142,8 @@ For this, add `api.anthropic.com` to the policy's `allowed_hosts` and `ANTHROPIC
 the command line. The agent and its dependencies must be in the image or in a mount.
 
 The job's wrapper starts a broker outside the container and binds its socket in, so the agent
-submits child jobs with plain `csub`, without ssh or network access to the submit host. With
+submits child jobs with plain `csub`, without ssh or network access to the submit host. That
+broker confines child jobs to the parent's mounts, hosts, image and session. With
 `inject_client = true` (the default) the wrapper also binds the broker's csub package and puts
 `csub` on `PATH`. That needs `python3` 3.9 or newer in the image; both agentic-sandbox images
 have it.

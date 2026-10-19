@@ -97,7 +97,8 @@ TOOLS: dict[str, ToolDef] = {
             "<= 1 h). There is no network unless allow_hosts lists hosts from probe.allowed_hosts. "
             "Returns the job_id and the resolved request including estimated_max_cost_usd. "
             "Output appears in <cwd>/.csub/jobs/<job_id>/{stdout,stderr}. From inside a job you "
-            "can submit further jobs; depends_on with when='ended' lets a job queue its successor.",
+            "can submit further jobs within this job's mounts, hosts and image; depends_on with "
+            "when='ended' lets a job queue its successor.",
             jobspec_schema(exclude=("mounts", "session")),
             _submit,
         ),

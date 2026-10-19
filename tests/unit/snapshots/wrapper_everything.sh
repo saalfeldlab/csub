@@ -5,7 +5,7 @@ JOB_DIR=/home/u/.csub/jobs/"$LSB_JOBID"
 mkdir -p "$JOB_DIR" && cd "$JOB_DIR" || exit 97
 SCRATCH=''
 SCRATCH=<P2>/testuser/csub/"$LSB_JOBID"; mkdir -p "$SCRATCH" || exit 98
-/home/u/.local/pipx/venvs/csub/bin/python -m csub.broker --serve "$JOB_DIR/csub.sock" &
+/home/u/.local/pipx/venvs/csub/bin/python -m csub.broker --serve "$JOB_DIR/csub.sock" --parent "$JOB_DIR" &
 BROKER_PID=$!
 rc=''
 finish() {
@@ -18,6 +18,7 @@ trap 'rc=143; exit 143' TERM
 trap 'rc=130; exit 130' INT
 trap 'rc=141; exit 141' USR2
 i=0; while [ ! -S "$JOB_DIR/csub.sock" ]; do i=$((i + 1)); [ "$i" -gt 100 ] && exit 93; sleep 0.1; done
+i=0; while [ ! -f "$JOB_DIR/request.json" ]; do i=$((i + 1)); [ "$i" -gt 1200 ] && exit 93; sleep 0.1; done
 /home/u/.local/share/csub/agentic-sandbox/scripts/podman-run.sh \
     --keep-id \
     --image ghcr.io/test/agent:latest \

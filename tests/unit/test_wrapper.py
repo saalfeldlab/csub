@@ -74,7 +74,7 @@ def test_wrapper_structure(render):
     assert lines[0] == "#!/bin/sh"
     assert lines[2] == f"export PATH=/usr/local/bin:/usr/bin:/bin USER={job.user} HOME=/home/u"
     assert f'JOB_DIR={STATE}/jobs/"$LSB_JOBID"' in text
-    assert f'{BROKER} --serve "$JOB_DIR/csub.sock" &' in text
+    assert f'{BROKER} --serve "$JOB_DIR/csub.sock" --parent "$JOB_DIR" &' in text
     assert "--keep-id" in text and "--gpu" in text and "--allow pypi.org" in text
     assert '--rw "$SCRATCH"' in text and '--ro "$JOB_DIR/csub.sock"' in text
     assert text.rstrip().endswith('rc=$?\nexit "$rc"')
@@ -149,6 +149,9 @@ def exec_env(tmp_path, fake_sandbox):
     def run_text(text, job_id="42", env_extra=None, slots=1, path="/usr/bin:/bin"):
         script = tmp_path / "wrapper.sh"
         script.write_text(text)
+        jd = state_dir / "jobs" / job_id  # the broker's finalize() puts request.json here
+        jd.mkdir(parents=True, exist_ok=True)
+        (jd / "request.json").write_text("{}")
         env = {
             "PATH": path,
             "LSB_JOBID": job_id,

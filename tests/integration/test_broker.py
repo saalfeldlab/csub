@@ -155,6 +155,68 @@ def test_status_and_kill_scoping(broker, submit, fake_lsf):
     fake_lsf.run("bkill", foreign)
 
 
+def test_child_jobs_stay_inside_the_parent(
+    broker, submit, project_dir, roots, int_policy_dict, policy_path
+):
+    """A per-job broker (--parent JOB_DIR) confines every request to what the parent got."""
+    from tests.integration.conftest import Broker
+    from tests.support.policyfile import write_policy
+
+    parent = submit(["sleep", "30"], allow_hosts=["pypi.org", "lab.janelia.org"])
+    other = submit(["sleep", "30"], session="othersess")["job_id"]
+    child = Broker(broker.cmd + ["--parent", parent["broker_job_dir"]], broker.env)
+    sub = project_dir / "sub"
+    sub.mkdir()
+    elsewhere = roots.allowed / "elsewhere"
+    elsewhere.mkdir()
+    rw = {"path": str(project_dir), "mode": "rw"}
+
+    def req(**fields):
+        job = {
+            "command": ["true"],
+            "cwd": str(project_dir),
+            "mounts": [
+                {"path": str(project_dir), "mode": "rw"},
+                {"path": str(roots.nrs), "mode": "ro"},
+            ],
+            "session": "testsess",
+            "allow_hosts": ["pypi.org", "api.lab.janelia.org"],
+            **fields,
+        }
+        return {"protocol": 1, "op": "submit", "job": job}
+
+    probe = child.ok({"protocol": 1, "op": "probe"})
+    assert probe["allowed_hosts"] == ["lab.janelia.org", "pypi.org"]
+    assert probe["allowed_images"] == [parent["image"]]
+    assert probe["allowed_roots"] == [str(project_dir), str(roots.nrs)]
+    assert probe["readonly_roots"] == [str(roots.nrs)]
+    # policy tightened after the parent started: probe shows the intersection
+    int_policy_dict["broker"]["allowed_hosts"].remove("*.janelia.org")
+    int_policy_dict["broker"]["allowed_roots"].remove(str(roots.nrs))
+    write_policy(policy_path, int_policy_dict)
+    probe = child.ok({"protocol": 1, "op": "probe"})
+    assert probe["allowed_hosts"] == ["pypi.org"] and probe["allowed_roots"] == [str(project_dir)]
+    int_policy_dict["broker"]["allowed_hosts"].append("*.janelia.org")
+    int_policy_dict["broker"]["allowed_roots"].append(str(roots.nrs))
+    write_policy(policy_path, int_policy_dict)
+    ok = child.ok(req(cwd=str(sub), mounts=[{"path": str(sub), "mode": "rw"}]))
+    assert ok["session"] == "testsess"
+    pv = "policy_violation"
+    wider = req(mounts=[rw, {"path": str(elsewhere)}])
+    assert "outside the parent" in child.error(wider, pv)["message"]
+    upgraded = req(mounts=[rw, {"path": str(roots.nrs), "mode": "rw"}])
+    assert "read-only in the parent" in child.error(upgraded, pv)["message"]
+    assert (
+        "not allowed in the parent" in child.error(req(allow_hosts=["github.com"]), pv)["message"]
+    )
+    assert "parent's image" in child.error(req(image="ghcr.io/test/other-x:1"), pv)["message"]
+    assert "parent's session" in child.error(req(session="othersess"), pv)["message"]
+    child.error({"protocol": 1, "op": "status", "session": "othersess"}, pv)
+    child.error({"protocol": 1, "op": "kill", "job_ids": [other]}, "not_found")
+    assert set(child.status(session="testsess")) >= {parent["job_id"], ok["job_id"]}
+    broker.ok({"protocol": 1, "op": "kill", "job_ids": [parent["job_id"], other]})
+
+
 def test_kill_session(broker, submit):
     ids = [submit(["sleep", "30"])["job_id"] for _ in range(2)]
     for jid in ids:

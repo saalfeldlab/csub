@@ -167,6 +167,10 @@ wrapper mounts the installed client into the container.
 | `CSUB_MOUNTS`         | this job's mounts (the default for child jobs) |
 | `CSUB_SESSION`        | session; child jobs join it                    |
 | `CSUB_IMAGE`          | this job's image (the default for child jobs)  |
+
+Child jobs cannot exceed their parent: mounts must lie inside the parent's (no read-only to
+read-write), hosts must be among the parent's, and the image and session are the parent's. Status
+and kill from inside a job see only the parent's session.
 | `CSUB_TRANSPORT`      | `unix`                                         |
 | `CSUB_SOCKET`         | the per-job broker socket                      |
 

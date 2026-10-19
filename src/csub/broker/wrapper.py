@@ -7,7 +7,7 @@ the inner (in-sandbox) script only as positional parameters.
 
 Wrapper-stage exit codes (so ``exit_code`` tells them apart from the command's):
 
-  93  the per-job broker did not create its socket
+  93  the per-job broker did not create its socket, or the job record never appeared
   94  could not write the script body (shell mode)
   95  could not cd into the job's cwd
   96  could not create the in-sandbox job dir / HOME
@@ -27,6 +27,7 @@ import shlex
 from csub import __version__
 from csub.broker.policy import SANDBOX_SCRIPTS
 from csub.broker.resolve import ResolvedJob
+from csub.broker.state import REQUEST_NAME
 
 SOCKET_NAME = "csub.sock"
 EXIT_NO_BROKER = 93
@@ -141,12 +142,14 @@ def render_wrapper(
     broker_cmd: str,
     home: str,
     client_src: str | None = None,
+    record_timeout_s: int = 120,
 ) -> str:
     """The script handed to ``bsub`` on stdin. ``broker_cmd`` is already shell-quoted.
 
     ``home`` is the user's real home: with ``bsub -env none`` nothing sets it, and
     podman-run.sh (``set -u``) reads ``$HOME`` and ``$USER``. The inner script overrides
-    HOME for the job itself.
+    HOME for the job itself. ``record_timeout_s`` is the broker's bsub timeout: the longest the
+    job record can lag behind dispatch.
     """
     inner = render_inner(job, client_src=client_src)
     lines = [
@@ -163,7 +166,7 @@ def render_wrapper(
             f'SCRATCH={q(scratch_base)}/"$LSB_JOBID"; mkdir -p "$SCRATCH" || exit {EXIT_SCRATCH}'
         )
     lines += [
-        f'{broker_cmd} --serve "$JOB_DIR/{SOCKET_NAME}" &',
+        f'{broker_cmd} --serve "$JOB_DIR/{SOCKET_NAME}" --parent "$JOB_DIR" &',
         "BROKER_PID=$!",
         # Everything that must happen at the end happens in ONE EXIT handler, and the fatal
         # signals LSF sends (bkill: INT then TERM; walltime: USR2 then TERM, then KILL) are
@@ -184,6 +187,10 @@ def render_wrapper(
         "trap 'rc=141; exit 141' USR2",
         f'i=0; while [ ! -S "$JOB_DIR/{SOCKET_NAME}" ]; do '
         f'i=$((i + 1)); [ "$i" -gt 100 ] && exit {EXIT_NO_BROKER}; sleep 0.1; done',
+        # request.json is moved into $JOB_DIR once bsub has returned the job id, which can be
+        # after dispatch; the broker needs it to confine child jobs. Allow as long as bsub may take.
+        f'i=0; while [ ! -f "$JOB_DIR/{REQUEST_NAME}" ]; do i=$((i + 1)); '
+        f'[ "$i" -gt {record_timeout_s * 10} ] && exit {EXIT_NO_BROKER}; sleep 0.1; done',
     ]
     if job.sandbox == "bwrap":
         # sandbox-run.sh binds $PWD read-write; that must be the job's cwd, never $JOB_DIR.

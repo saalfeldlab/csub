@@ -9,6 +9,7 @@ half-applied.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import pwd
 import shlex
@@ -21,7 +22,8 @@ from csub import __version__
 from csub.broker.lsf import LsfRunner
 from csub.broker.ops import BrokerContext, handle
 from csub.broker.policy import default_policy_path, load_policy
-from csub.broker.state import StateDir
+from csub.broker.resolve import Parent
+from csub.broker.state import REQUEST_NAME, StateDir
 from csub.protocol import LIMITS, CsubError, Request, error_response
 
 
@@ -40,7 +42,18 @@ def broker_command(policy_path: str | None, home_override: str | None) -> str:
     return shlex.join(argv)
 
 
-def build_context(policy_path: str | None, home_override: str | None) -> BrokerContext:
+def load_parent(job_dir: str) -> Parent:
+    """The resolved request the broker itself wrote for the job this per-job broker serves."""
+    try:
+        with open(os.path.join(job_dir, REQUEST_NAME)) as f:
+            return Parent.from_response(json.load(f)["resolved"])
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        raise CsubError("internal_error", f"cannot read the parent job's record: {e}") from None
+
+
+def build_context(
+    policy_path: str | None, home_override: str | None, parent_dir: str | None = None
+) -> BrokerContext:
     user, home = _identity(home_override)
     path = policy_path or default_policy_path(home)
     policy = load_policy(path, home=home)
@@ -65,6 +78,7 @@ def build_context(policy_path: str | None, home_override: str | None) -> BrokerC
         lsf=LsfRunner(policy.lsf),
         protected_dirs=protected,
         broker_cmd=broker_command(os.path.abspath(path), home_override),
+        parent=load_parent(parent_dir) if parent_dir else None,
     )
 
 
@@ -110,12 +124,17 @@ def main(
     parser.add_argument(
         "--serve", metavar="SOCKET", help="serve requests on a Unix socket until killed"
     )
+    parser.add_argument(
+        "--parent",
+        metavar="JOB_DIR",
+        help="broker-owned dir of the job this broker serves; its requests may not exceed it",
+    )
     parser.add_argument("--version", action="version", version=f"csub-broker {__version__}")
     args = parser.parse_args(argv)
     os.umask(0o077)
 
     def ctx_factory() -> BrokerContext:
-        return build_context(args.policy, args.home)
+        return build_context(args.policy, args.home, args.parent)
 
     if args.serve:
         from csub.broker.serve import serve

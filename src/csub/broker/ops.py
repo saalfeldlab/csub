@@ -11,7 +11,7 @@ import csub
 from csub import __version__
 from csub.broker.lsf import LsfRunner
 from csub.broker.policy import Policy
-from csub.broker.resolve import ResolveContext, ResolveError, resolve
+from csub.broker.resolve import Parent, ResolveContext, ResolveError, parent_probe, resolve
 from csub.broker.state import META_NAME, REQUEST_NAME, WRAPPER_NAME, JobRecord, StateDir
 from csub.broker.wrapper import render_wrapper
 from csub.protocol import PROTOCOL_VERSION, CsubError, Request, ok_response
@@ -26,6 +26,7 @@ class BrokerContext:
     lsf: LsfRunner
     protected_dirs: tuple[str, ...]
     broker_cmd: str  # shell-quoted command that starts this broker (for --serve in the wrapper)
+    parent: Parent | None = None  # per-job broker: the job it serves; requests stay inside it
 
     def resolve_context(self) -> ResolveContext:
         return ResolveContext(
@@ -33,6 +34,7 @@ class BrokerContext:
             home=os.path.realpath(self.home),
             protected_dirs=self.protected_dirs,
             lookup_job=self.state.lookup,
+            parent=self.parent,
         )
 
 
@@ -46,11 +48,11 @@ def _session_group(ctx: BrokerContext, session: str) -> str:
 
 
 def op_probe(req: Request, ctx: BrokerContext) -> dict:
+    summary = ctx.policy.probe_summary()
+    if ctx.parent is not None:  # advertise what a child can actually get
+        summary.update(parent_probe(ctx.parent, ctx.policy))
     return ok_response(
-        broker_version=__version__,
-        protocol=PROTOCOL_VERSION,
-        user=ctx.user,
-        **ctx.policy.probe_summary(),
+        broker_version=__version__, protocol=PROTOCOL_VERSION, user=ctx.user, **summary
     )
 
 
@@ -74,6 +76,7 @@ def op_submit(req: Request, ctx: BrokerContext) -> dict:
         broker_cmd=ctx.broker_cmd,
         home=ctx.home,
         client_src=client_source_dir() if ctx.policy.inject_client else None,
+        record_timeout_s=ctx.policy.lsf.timeout_s,
     )
     token, pdir = ctx.state.new_pending()
     try:
@@ -108,13 +111,18 @@ def op_submit(req: Request, ctx: BrokerContext) -> dict:
 
 
 def _records_for(req: Request, ctx: BrokerContext) -> dict[str, JobRecord]:
-    """Explicit ids must all be jobs this broker submitted for this user; else not_found."""
+    """Explicit ids must all be jobs this broker submitted for this user (and, in a per-job
+    broker, of the parent's session); else not_found."""
     assert req.job_ids
     records: dict[str, JobRecord] = {}
     missing: list[str] = []
     for jid in req.job_ids:
         rec = ctx.state.record(jid)
-        if rec is None or rec.user != ctx.user:
+        if (
+            rec is None
+            or rec.user != ctx.user
+            or (ctx.parent is not None and rec.session != ctx.parent.session)
+        ):
             missing.append(jid)
         else:
             records[jid] = rec
@@ -204,4 +212,8 @@ OPS = {"submit": op_submit, "status": op_status, "kill": op_kill, "probe": op_pr
 
 
 def handle(req: Request, ctx: BrokerContext) -> dict:
+    if ctx.parent is not None and req.session not in (None, ctx.parent.session):
+        raise CsubError(
+            "policy_violation", f"session {req.session!r}: child jobs stay in the parent's session"
+        )
     return OPS[req.op](req, ctx)

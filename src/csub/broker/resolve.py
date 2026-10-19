@@ -46,6 +46,35 @@ def _policy(msg: str) -> ResolveError:
 
 
 @dataclass(frozen=True)
+class ResolvedMount:
+    path: str
+    mode: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"path": self.path, "mode": self.mode}
+
+
+@dataclass(frozen=True)
+class Parent:
+    """What the job a per-job broker serves was granted. Its children may not exceed it."""
+
+    session: str
+    image: str
+    mounts: tuple[ResolvedMount, ...]
+    allow_hosts: tuple[str, ...]
+
+    @classmethod
+    def from_response(cls, d: dict[str, Any]) -> Parent:
+        """From the ``resolved`` part of the parent's request.json (``ResolvedJob.to_response``)."""
+        return cls(
+            session=d["session"],
+            image=d["image"],
+            mounts=tuple(ResolvedMount(m["path"], m["mode"]) for m in d["mounts"]),
+            allow_hosts=tuple(d["allow_hosts"]),
+        )
+
+
+@dataclass(frozen=True)
 class ResolveContext:
     user: str
     home: str  # realpath'd
@@ -54,15 +83,7 @@ class ResolveContext:
     isdir: Callable[[str], bool] = os.path.isdir
     # job_id -> (user, session) of a job this broker submitted, or None
     lookup_job: Callable[[str], tuple[str, str] | None] = lambda _job_id: None
-
-
-@dataclass(frozen=True)
-class ResolvedMount:
-    path: str
-    mode: str
-
-    def to_dict(self) -> dict[str, str]:
-        return {"path": self.path, "mode": self.mode}
+    parent: Parent | None = None  # set in a per-job broker; the submitting job's grants
 
 
 @dataclass(frozen=True)
@@ -418,6 +439,57 @@ def check_no_directives(
             )
 
 
+def check_parent(job: ResolvedJob, parent: Parent) -> None:
+    """A child job gets at most what its parent has: same session and image, mounts inside the
+    parent's with no ro -> rw upgrade, hosts the parent could reach."""
+    if job.session != parent.session:
+        raise _policy(f"session {job.session!r}: child jobs stay in the parent's session")
+    for m in job.mounts:
+        pm = next((p for p in parent.mounts if is_under(m.path, p.path)), None)
+        if pm is None:
+            raise _policy(f"mount {m.path} is outside the parent job's mounts")
+        if m.mode == "rw" and pm.mode != "rw":
+            raise _policy(f"mount {m.path} is read-only in the parent job")
+    for h in job.allow_hosts:
+        # same rule as the sandbox proxy: an entry covers itself and its subdomains
+        if not any(h == p or h.endswith("." + p) for p in parent.allow_hosts):
+            raise _policy(f"host {h} is not allowed in the parent job")
+    if job.image != parent.image:
+        raise _policy(f"image {job.image!r}: child jobs use the parent's image {parent.image!r}")
+
+
+def parent_probe(parent: Parent, policy: Policy) -> dict[str, Any]:
+    """Probe fields for a child: the parent's grants that the current policy still permits."""
+
+    def permitted(check: Callable[[], Any]) -> bool:
+        try:
+            check()
+        except ResolveError:
+            return False
+        return True
+
+    mounts = [
+        m
+        for m in parent.mounts
+        if any(is_under(m.path, r) for r in policy.allowed_roots)
+        and not any(is_under(m.path, r) for r in policy.denied_roots)
+    ]
+    image_ok = permitted(lambda: check_image(parent.image or None, policy, sandbox=policy.sandbox))
+    return {
+        "default_image": parent.image,
+        "allowed_images": [parent.image] if image_ok else [],
+        "allowed_roots": [m.path for m in mounts],
+        "readonly_roots": [
+            m.path
+            for m in mounts
+            if m.mode == "ro" or any(is_under(m.path, r) for r in policy.readonly_roots)
+        ],
+        "allowed_hosts": [
+            h for h in parent.allow_hosts if permitted(lambda h=h: check_hosts((h,), policy))
+        ],
+    }
+
+
 # --- the whole thing --------------------------------------------------------------------
 
 
@@ -487,7 +559,7 @@ def resolve(spec: JobSpec, policy: Policy, ctx: ResolveContext) -> ResolvedJob:
     deps = check_depends(spec.depends_on, ctx, session)
     extra = check_lsf_extra(spec.lsf_extra, policy)
 
-    return ResolvedJob(
+    job = ResolvedJob(
         user=ctx.user,
         session=session,
         job_group=job_group,
@@ -514,3 +586,6 @@ def resolve(spec: JobSpec, policy: Policy, ctx: ResolveContext) -> ResolvedJob:
         lsf_extra_argv=(("-P", policy.lsf.project) if policy.lsf.project else ()) + extra,
         estimated_max_cost_usd=cost,
     )
+    if ctx.parent is not None:
+        check_parent(job, ctx.parent)
+    return job
