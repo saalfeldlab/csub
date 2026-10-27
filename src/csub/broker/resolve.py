@@ -56,10 +56,13 @@ class ResolvedMount:
 
 @dataclass(frozen=True)
 class Parent:
-    """What the job a per-job broker serves was granted. Its children may not exceed it."""
+    """What the job a per-job broker serves was granted. Its children may not exceed it.
 
-    session: str
-    image: str
+    A top-level broker started with ``--envelope-*`` has no parent job: ``session`` and ``image``
+    are None there and only mounts and hosts are bounded."""
+
+    session: str | None
+    image: str | None
     mounts: tuple[ResolvedMount, ...]
     allow_hosts: tuple[str, ...]
 
@@ -442,7 +445,7 @@ def check_no_directives(
 def check_parent(job: ResolvedJob, parent: Parent) -> None:
     """A child job gets at most what its parent has: same session and image, mounts inside the
     parent's with no ro -> rw upgrade, hosts the parent could reach."""
-    if job.session != parent.session:
+    if parent.session is not None and job.session != parent.session:
         raise _policy(f"session {job.session!r}: child jobs stay in the parent's session")
     for m in job.mounts:
         pm = next((p for p in parent.mounts if is_under(m.path, p.path)), None)
@@ -454,7 +457,7 @@ def check_parent(job: ResolvedJob, parent: Parent) -> None:
         # same rule as the sandbox proxy: an entry covers itself and its subdomains
         if not any(h == p or h.endswith("." + p) for p in parent.allow_hosts):
             raise _policy(f"host {h} is not allowed in the parent job")
-    if job.image != parent.image:
+    if parent.image is not None and job.image != parent.image:
         raise _policy(f"image {job.image!r}: child jobs use the parent's image {parent.image!r}")
 
 
@@ -474,10 +477,17 @@ def parent_probe(parent: Parent, policy: Policy) -> dict[str, Any]:
         if any(is_under(m.path, r) for r in policy.allowed_roots)
         and not any(is_under(m.path, r) for r in policy.denied_roots)
     ]
-    image_ok = permitted(lambda: check_image(parent.image or None, policy, sandbox=policy.sandbox))
+    images: dict[str, Any] = {}
+    if parent.image is not None:
+        image_ok = permitted(
+            lambda: check_image(parent.image or None, policy, sandbox=policy.sandbox)
+        )
+        images = {
+            "default_image": parent.image,
+            "allowed_images": [parent.image] if image_ok else [],
+        }
     return {
-        "default_image": parent.image,
-        "allowed_images": [parent.image] if image_ok else [],
+        **images,
         "allowed_roots": [m.path for m in mounts],
         "readonly_roots": [
             m.path

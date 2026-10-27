@@ -22,7 +22,7 @@ from csub import __version__
 from csub.broker.lsf import LsfRunner
 from csub.broker.ops import BrokerContext, handle
 from csub.broker.policy import default_policy_path, load_policy
-from csub.broker.resolve import Parent
+from csub.broker.resolve import Parent, ResolvedMount
 from csub.broker.state import REQUEST_NAME, StateDir
 from csub.protocol import LIMITS, CsubError, Request, error_response
 
@@ -51,8 +51,27 @@ def load_parent(job_dir: str) -> Parent:
         raise CsubError("internal_error", f"cannot read the parent job's record: {e}") from None
 
 
+def envelope_parent(mounts: list[str], hosts: list[str]) -> Parent:
+    """A parent for a top-level broker: the mounts and hosts of the sandbox its client runs in."""
+    out: list[ResolvedMount] = []
+    for item in mounts:
+        path, _, mode = item.partition(":")
+        mode = mode or "rw"
+        if not os.path.isabs(path) or mode not in ("ro", "rw"):
+            raise CsubError(
+                "invalid_request", f"--envelope-mount {item!r}: expected /abs/path[:ro|rw]"
+            )
+        out.append(ResolvedMount(os.path.realpath(path), mode))
+    return Parent(
+        session=None, image=None, mounts=tuple(out), allow_hosts=tuple(h.lower() for h in hosts)
+    )
+
+
 def build_context(
-    policy_path: str | None, home_override: str | None, parent_dir: str | None = None
+    policy_path: str | None,
+    home_override: str | None,
+    parent_dir: str | None = None,
+    envelope: Parent | None = None,
 ) -> BrokerContext:
     user, home = _identity(home_override)
     path = policy_path or default_policy_path(home)
@@ -78,7 +97,7 @@ def build_context(
         lsf=LsfRunner(policy.lsf),
         protected_dirs=protected,
         broker_cmd=broker_command(os.path.abspath(path), home_override),
-        parent=load_parent(parent_dir) if parent_dir else None,
+        parent=load_parent(parent_dir) if parent_dir else envelope,
     )
 
 
@@ -129,12 +148,37 @@ def main(
         metavar="JOB_DIR",
         help="broker-owned dir of the job this broker serves; its requests may not exceed it",
     )
+    parser.add_argument(
+        "--envelope-mount",
+        metavar="PATH[:ro|rw]",
+        action="append",
+        default=[],
+        help="top-level broker: a mount the client's sandbox has; requests may not exceed the "
+        "envelope (repeatable; mode defaults to rw as in CSUB_MOUNTS)",
+    )
+    parser.add_argument(
+        "--envelope-host",
+        metavar="HOST",
+        action="append",
+        default=[],
+        help="top-level broker: a host the client's sandbox may reach (repeatable; with an "
+        "envelope, hosts not listed are refused)",
+    )
     parser.add_argument("--version", action="version", version=f"csub-broker {__version__}")
     args = parser.parse_args(argv)
     os.umask(0o077)
 
+    envelope = None
+    if args.envelope_mount or args.envelope_host:
+        if args.parent:
+            parser.error("--parent and --envelope-* are alternatives")
+        try:
+            envelope = envelope_parent(args.envelope_mount, args.envelope_host)
+        except CsubError as e:
+            parser.error(str(e))
+
     def ctx_factory() -> BrokerContext:
-        return build_context(args.policy, args.home, args.parent)
+        return build_context(args.policy, args.home, args.parent, envelope)
 
     if args.serve:
         from csub.broker.serve import serve
