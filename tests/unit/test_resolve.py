@@ -242,8 +242,9 @@ def test_bwrap_takes_no_image(make_spec, make_policy, ctx):
     assert resolve(make_spec(image="ghcr.io/test/agent:latest"), p, ctx).image == ""
     # ...but asking for anything else would silently run on the host toolchain: refuse.
     reject("policy_violation", "bwrap", make_spec(image="ghcr.io/test/agent:v2"), p, ctx)
-    # bwrap cannot pass GPUs through: a GPU job is refused rather than quietly run elsewhere.
-    reject("policy_violation", "GPU jobs need podman", make_spec(gpus=1, queue="gpu_short"), p, ctx)
+    # GPUs are passed to sandbox-run.sh as --gpu, so a GPU job is accepted under bwrap too.
+    gpu_job = resolve(make_spec(gpus=1, queue="gpu_short"), p, ctx)
+    assert gpu_job.sandbox == "bwrap" and gpu_job.gpus == 1
 
 
 def test_image(make_spec, policy, ctx):

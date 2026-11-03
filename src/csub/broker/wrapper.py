@@ -106,7 +106,9 @@ def sandbox_run_line(
 
     Some arguments are deliberately shell expressions ("$SCRATCH", "$JOB_DIR/...") that the
     wrapper expands at run time; everything agent-controlled is quoted. bwrap (sandbox-run.sh)
-    takes the same flags minus image, identity and GPU, which only mean something to podman.
+    takes the same flags minus image and identity, which only mean something to podman;
+    `--gpu` goes to both (sandbox-run.sh binds only the job's allocated GPUs, and refuses if
+    there are none).
     """
     podman = job.sandbox == "podman"
     segments = [q(os.path.join(scripts_dir, SANDBOX_SCRIPTS[job.sandbox]))]
@@ -121,7 +123,7 @@ def sandbox_run_line(
     segments.append(f'--ro "$JOB_DIR/{SOCKET_NAME}"')
     if client_src:
         segments.append(f"--ro {q(client_src)}")
-    if podman and job.gpus:
+    if job.gpus:
         segments.append("--gpu")
     if job.agent:
         segments.append(f"--{job.agent}")  # the launcher binds its CLI, config copy, credentials
