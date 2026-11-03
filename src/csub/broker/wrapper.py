@@ -56,6 +56,9 @@ def render_inner(job: ResolvedJob, *, client_src: str | None = None) -> str:
     cwd = q(job.cwd)
     lines = [
         "set -u",
+        # The broker runs under umask 077 for its own state and LSF hands the submitting
+        # process's umask to the job; without this every file a job writes is owner-only.
+        "umask 0002",
         f"export HOME={cwd}/.csub/home",
         f'J={cwd}/.csub/jobs/"$1"',
         f'export USER={q(job.user)} LOGNAME={q(job.user)} LSB_JOBID="$1"',
