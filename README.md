@@ -226,6 +226,7 @@ gpu_price_usd_per_hour = 0.5
 profile = "/etc/profile.d/lsf.sh"         # sourced before bsub/bjobs/bkill
 norc = false                              # true: run LSF commands with bash --norc (skip ~/.bashrc)
 project = "mylab"                         # bsub -P: the lab or project jobs are billed to
+umask = "022"                             # the job's umask (default 022; "002" for group-writable output)
 ```
 
 Slots are computed as `max(cpus, ceil(mem_mb / mem_per_slot_mb))`. Every job gets a walltime;

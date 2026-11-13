@@ -117,6 +117,9 @@ def test_misc_rules(make_policy):
     _reject(make_policy, ">= 1", limits={"max_slots": 0})
     _reject(make_policy, "must not be empty", lsf={"bsub": ""})
     _reject(make_policy, "timeout_s", lsf={"timeout_s": 0})
+    _reject(make_policy, "lsf.umask", lsf={"umask": "0028"})
+    _reject(make_policy, "lsf.umask", lsf={"umask": "22"})
+    assert make_policy(lsf={"umask": "0002"}).lsf.umask == "0002"
 
 
 def test_queue_rules(make_policy, policy_dict):

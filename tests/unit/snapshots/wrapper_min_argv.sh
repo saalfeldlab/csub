@@ -25,6 +25,7 @@ i=0; while [ ! -f "$JOB_DIR/request.json" ]; do i=$((i + 1)); [ "$i" -gt 1200 ] 
     --ro <P1> \
     --ro "$JOB_DIR/csub.sock" \
     -- /bin/sh -c 'set -u
+umask 022
 export HOME=<P0>/.csub/home
 J=<P0>/.csub/jobs/"$1"
 export USER=testuser LOGNAME=testuser LSB_JOBID="$1"
