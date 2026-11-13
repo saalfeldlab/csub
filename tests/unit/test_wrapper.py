@@ -106,7 +106,8 @@ def test_keep_id_follows_policy(make_spec, make_policy, ctx):
 def test_inner_exports(render):
     job, _, _ = render(env={"OMP_NUM_THREADS": "4"}, walltime_min=30)
     inner = render_inner(job)
-    assert inner.startswith("set -u\numask 0002\n")  # jobs must not inherit the broker's 077
+    assert inner.startswith("set -u\numask 022\n")  # jobs must not inherit the broker's 077
+    assert render_inner(job, umask="002").startswith("set -u\numask 002\n")
     assert f"export HOME={shlex.quote(job.cwd)}/.csub/home" in inner
     assert 'export CSUB_TRANSPORT=unix CSUB_SOCKET="$6" CSUB_JOB_ID="$1"' in inner
     assert f"export CSUB_MOUNTS={shlex.quote(mounts_env_value(job))}" in inner

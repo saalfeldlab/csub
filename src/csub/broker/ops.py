@@ -77,6 +77,7 @@ def op_submit(req: Request, ctx: BrokerContext) -> dict:
         home=ctx.home,
         client_src=client_source_dir() if ctx.policy.inject_client else None,
         record_timeout_s=ctx.policy.lsf.timeout_s,
+        umask=ctx.policy.lsf.umask,
     )
     token, pdir = ctx.state.new_pending()
     try:

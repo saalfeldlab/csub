@@ -93,7 +93,7 @@ echo '{"protocol":1,"op":"probe"}' | ~/.local/bin/csub-broker
 
 The answer contains `"ok":true`. Otherwise it names the policy line that is wrong. The
 [policy section of the README](../README.md#policy) lists optional keys, such as `sandbox`,
-`readonly_roots`, `project` and `norc`.
+`readonly_roots`, `project`, `norc` and `umask`.
 
 ## 3. Smoke test
 

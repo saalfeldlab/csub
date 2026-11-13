@@ -105,6 +105,7 @@ class LsfConfig:
     timeout_s: int = 120
     norc: bool = False  # run LSF commands via `bash --noprofile --norc`, skipping ~/.bashrc
     project: str = ""  # bsub -P, the lab or project every job is billed to
+    umask: str = "022"  # the job's umask; LSF would otherwise hand it the broker's 077
 
 
 @dataclass(frozen=True)
@@ -207,6 +208,7 @@ _LSF_KEYS: dict[str, tuple[str, bool]] = {
     "timeout_s": ("int", False),
     "norc": ("bool", False),
     "project": ("str", False),
+    "umask": ("str", False),
 }
 _TOP_KEYS = {"broker", "limits", "queues", "lsf", "agents"}
 
@@ -442,6 +444,8 @@ def parse_policy(  # noqa: C901 - one validator
             raise PolicyError(f"{source}: lsf.{key}: must not be empty")
     if lsf_cfg.timeout_s < 1:
         raise PolicyError(f"{source}: lsf.timeout_s: must be >= 1")
+    if not re.fullmatch(r"0?[0-7]{3}", lsf_cfg.umask):
+        raise PolicyError(f'{source}: lsf.umask: must be three octal digits, e.g. "022"')
 
     # --- trust-boundary placement of broker-owned directories ---
     home_real = os.path.realpath(home)
