@@ -183,7 +183,7 @@ The broker reads `~/.config/csub/broker.toml` on the submit host. Unknown keys a
 default_image  = "ghcr.io/example/agent:latest"
 allowed_images = ["ghcr.io/example/*:*"]
 allowed_roots  = ["/data/lab"]            # mounts must be below these; $HOME is always refused
-sandbox        = "podman"                 # or "bwrap" (no image, no rootless podman, no GPU jobs)
+sandbox        = "podman"                 # or "bwrap" (no image, no rootless podman; GPU jobs need sandbox-run.sh --gpu)
 readonly_roots = ["/data/lab/raw"]        # forced read-only
 allowed_hosts  = ["pypi.org", "files.pythonhosted.org"]  # globs allowed; "*" also crosses dots
 env_allow      = ["OMP_NUM_THREADS"]
