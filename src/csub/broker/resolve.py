@@ -548,8 +548,6 @@ def resolve(spec: JobSpec, policy: Policy, ctx: ResolveContext) -> ResolvedJob:
         )
 
     sandbox = policy.sandbox
-    if spec.gpus and sandbox == "bwrap":
-        raise _policy("GPU jobs need podman but this broker runs jobs under bwrap (policy sandbox)")
     image = check_image(spec.image, policy, sandbox=sandbox)
     env = check_env(spec.env, policy)
     hosts = check_hosts(spec.allow_hosts, policy)

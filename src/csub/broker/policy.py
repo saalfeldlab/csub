@@ -124,7 +124,7 @@ class Policy:
     scratch_root: str = "/scratch"
     keep_id: bool = True
     inject_client: bool = True
-    sandbox: str = "podman"  # bwrap cannot pass GPUs through: GPU requests are then refused
+    sandbox: str = "podman"  # or "bwrap" (agentic-sandbox sandbox-run.sh; GPUs via --gpu)
     env_allow: tuple[str, ...] = ()
     lsf_extra_allow: tuple[LsfExtraFlag, ...] = ()
     forbidden_name_tokens: tuple[str, ...] = DEFAULT_FORBIDDEN_NAME_TOKENS

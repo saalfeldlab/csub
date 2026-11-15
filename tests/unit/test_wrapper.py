@@ -408,6 +408,14 @@ def test_bwrap_line(make_spec, make_policy, ctx):
     assert text.index("cd " + shlex.quote(job.cwd)) < text.index("sandbox-run.sh")
 
 
+def test_bwrap_gpu_line(make_spec, make_policy, ctx):
+    p = make_policy(broker={"sandbox": "bwrap"})
+    job = resolve(make_spec(gpus=1, queue="gpu_l4"), p, ctx)
+    text = render_wrapper(job, state_dir=STATE, scripts_dir=SCRIPTS, broker_cmd=BROKER, home="/h")
+    assert f"{SCRIPTS}/sandbox-run.sh" in text and "--gpu" in text
+    assert "--image" not in text and "--keep-id" not in text
+
+
 def test_execute_bwrap_job(make_spec, make_policy, ctx, exec_env, project_dir, fake_sandbox):
     p = make_policy(broker={"sandbox": "bwrap"})
     job = resolve(make_spec(command=["sh", "-c", "pwd; exit 3"]), p, ctx)
