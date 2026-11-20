@@ -18,11 +18,60 @@ from csub.protocol import CsubError
 
 BSUB_SUBMITTED_RE = re.compile(r"Job <(\d+)> is submitted to (?:default )?queue <([^>]+)>\.")
 BSUB_BILLING_RE = re.compile(r"This job will be billed to (\S+)")
-BJOBS_FIELDS = ("jobid", "stat", "exit_code", "queue", "exec_host", "job_name")
+BJOBS_FIELDS = (
+    "jobid", "stat", "exit_code", "queue", "exec_host", "job_name",
+    "cpu_used", "max_mem", "avg_mem", "run_time", "memlimit",
+)  # fmt: skip
 BJOBS_NOT_FOUND_RE = re.compile(r"(No (unfinished |matching |)job|is not found|No job group)", re.I)
 BKILL_TERMINATED_RE = re.compile(r"Job <(\d+)> is being terminated")
 BKILL_FINISHED_RE = re.compile(r"Job <(\d+)>: Job has already finished")
 BKILL_NOT_FOUND_RE = re.compile(r"Job <(\d+)>: No matching job found")
+
+# What a job used, as bjobs -o prints it: "0.7 second(s)", "311 Mbytes", "6.8 Gbytes", "15 G";
+# "-" where LSF has no figure (yet). LSF's job summary in lsf.out says "1.09 sec.", "47 MB".
+_AMOUNT_RE = re.compile(r"^\s*([0-9]+(?:\.[0-9]+)?)\s*([A-Za-z]*)")
+_MB_PER_UNIT = {"K": 1 / 1024, "M": 1.0, "G": 1024.0, "T": 1024.0 * 1024}
+_MEM_UNIT_RE = re.compile(r"^([KMGT])(B|bytes)?$", re.I)
+
+
+def parse_seconds(text: str | None) -> float | None:
+    """'33 second(s)' or '1.09 sec.' -> seconds; None for '-' or anything else."""
+    m = _AMOUNT_RE.match(text or "")
+    return float(m.group(1)) if m and m.group(2).lower().startswith("sec") else None
+
+
+def parse_mb(text: str | None) -> float | None:
+    """'311 Mbytes', '6.8 Gbytes', '15 G' or '47 MB' -> megabytes; None for '-'."""
+    m = _AMOUNT_RE.match(text or "")
+    unit = _MEM_UNIT_RE.match(m.group(2)) if m else None
+    if not unit:
+        return None
+    return round(float(m.group(1)) * _MB_PER_UNIT[unit.group(1).upper()], 1)
+
+
+_SUMMARY_FIELDS = {
+    "CPU time": ("cpu_time_s", parse_seconds),
+    "Max Memory": ("max_mem_mb", parse_mb),
+    "Average Memory": ("avg_mem_mb", parse_mb),
+    "Total Requested Memory": ("mem_limit_mb", parse_mb),
+    "Run time": ("run_time_s", parse_seconds),
+}
+
+
+def parse_usage_summary(text: str) -> dict[str, float | None]:
+    """The figures of LSF's "Resource usage summary" at the end of a job's output file. Only
+    lines after that heading count, so nothing the job itself printed can pass for a figure."""
+    out: dict[str, float | None] = {name: None for name, _ in _SUMMARY_FIELDS.values()}
+    _, found, summary = text.rpartition("Resource usage summary:")
+    if not found:
+        return out
+    for line in summary.splitlines():
+        label, sep, value = line.partition(" :")
+        field = _SUMMARY_FIELDS.get(label.strip())
+        if sep and field:
+            out[field[0]] = field[1](value)
+    return out
+
 
 STATE_MAP = {
     "PEND": "PEND",
@@ -56,6 +105,20 @@ class BjobsRow:
     queue: str | None
     exec_host: str | None
     job_name: str | None
+    cpu_time_s: float | None = None
+    max_mem_mb: float | None = None
+    avg_mem_mb: float | None = None
+    run_time_s: float | None = None
+    mem_limit_mb: float | None = None
+
+    def usage(self) -> dict[str, float | None]:
+        return {
+            "cpu_time_s": self.cpu_time_s,
+            "max_mem_mb": self.max_mem_mb,
+            "avg_mem_mb": self.avg_mem_mb,
+            "run_time_s": self.run_time_s,
+            "mem_limit_mb": self.mem_limit_mb,
+        }
 
     @property
     def state(self) -> str:
@@ -129,9 +192,15 @@ class LsfRunner:
             parts = line.rstrip("\n").split("|")
             if len(parts) != len(BJOBS_FIELDS) or not parts[0].isdigit():
                 continue
-            jobid, stat, exit_code, queue, exec_host, job_name = parts
+            jobid, stat, exit_code, queue, exec_host, job_name = parts[:6]
+            cpu_used, max_mem, avg_mem, run_time, memlimit = parts[6:]
             rows.append(
                 BjobsRow(
+                    cpu_time_s=parse_seconds(cpu_used),
+                    max_mem_mb=parse_mb(max_mem),
+                    avg_mem_mb=parse_mb(avg_mem),
+                    run_time_s=parse_seconds(run_time),
+                    mem_limit_mb=parse_mb(memlimit),
                     job_id=jobid,
                     stat=stat,
                     exit_code=int(exit_code) if exit_code.isdigit() else None,

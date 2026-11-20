@@ -366,3 +366,27 @@ def test_parallel_submits(broker, submit):
     assert len(set(ids)) == 5
     for jid in ids:
         assert broker.wait(jid)["state"] == "DONE"
+
+
+def test_status_reports_usage(broker, submit, broker_env):
+    a = submit(["sleep", "30"])["job_id"]
+    b = submit(["true"], depends_on=[a])["job_id"]  # stays PEND behind a
+    e = broker.wait(a, states=("RUN",))
+    # a running job: memory and run time so far, the memory it was given, no CPU total yet
+    assert e["max_mem_mb"] == 12.0 and e["avg_mem_mb"] == 8.0 and e["mem_limit_mb"] == 15360.0
+    assert e["run_time_s"] is not None and e["cpu_time_s"] is None
+    p = broker.status(b)[b]
+    assert p["state"] == "PEND" and p["max_mem_mb"] is None and p["cpu_time_s"] is None
+    broker.ok({"protocol": 1, "op": "kill", "session": "testsess"})
+
+    jid = submit(["sh", "-c", "exit 3"])["job_id"]
+    e = broker.wait(jid)
+    assert e["source"] == "bjobs" and e["exit_code"] == 3
+    assert e["cpu_time_s"] == 0.5 and e["max_mem_mb"] == 12.0 and e["mem_limit_mb"] == 15360.0
+
+    # once bjobs has forgotten the job, the figures come from LSF's summary in lsf.out
+    broker.env = {**broker_env, "CSUB_FAKE_LSF_CLEAN_PERIOD_S": "0"}
+    e = broker.status(jid)[jid]
+    assert e["source"] == "exit_code" and e["state"] == "EXIT" and e["exit_code"] == 3
+    assert e["cpu_time_s"] == 0.5 and e["max_mem_mb"] == 12.0 and e["avg_mem_mb"] == 8.0
+    assert e["mem_limit_mb"] == 15360.0 and e["run_time_s"] is not None
