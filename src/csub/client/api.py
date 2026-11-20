@@ -193,14 +193,21 @@ class Client:
         return ProbeResult.from_dict(self._call({"op": "probe"}))
 
     def logs(
-        self, job_id: str, *, stream: str = "both", tail: int | None = None, cwd: str | None = None
+        self,
+        job_id: str,
+        *,
+        stream: str = "both",
+        tail: int | None = None,
+        cwd: str | None = None,
+        index: int | None = None,
     ) -> Logs:
+        """``index``: for an array job, the element whose output to read."""
         job_id = str(job_id)
         if cwd is None:
             cwd = self.status([job_id])[0].cwd
             if cwd is None:
                 raise CsubError("not_found", f"job {job_id} has no recorded working directory")
-        data = _logs.read_logs(cwd, job_id, stream=stream, tail=tail)
+        data = _logs.read_logs(cwd, job_id, stream=stream, tail=tail, index=index)
         return Logs(
             job_id=job_id,
             job_dir=data["job_dir"],
@@ -239,7 +246,15 @@ class Client:
         for s in statuses:
             out = err = ""
             out_path = err_path = None
-            if s.cwd:
+            if s.cwd and s.array:
+                # An array has no single output: show the first failed element's, if any.
+                failed = s.array.get("failed") or []
+                if failed:
+                    d = _logs.job_dir(s.cwd, s.job_id, failed[0])
+                    out_path, err_path = str(d / "stdout"), str(d / "stderr")
+                    out = _logs.tail_file(d / "stdout", tail_lines)
+                    err = _logs.tail_file(d / "stderr", tail_lines)
+            elif s.cwd:
                 d = _logs.job_dir(s.cwd, s.job_id)
                 out_path, err_path = str(d / "stdout"), str(d / "stderr")
                 out = _logs.tail_file(d / "stdout", tail_lines)

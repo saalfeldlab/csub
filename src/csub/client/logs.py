@@ -8,8 +8,10 @@ from pathlib import Path
 from csub.protocol import CsubError
 
 
-def job_dir(cwd: str, job_id: str) -> Path:
-    return Path(cwd) / ".csub" / "jobs" / str(job_id)
+def job_dir(cwd: str, job_id: str, index: int | None = None) -> Path:
+    """``index``: the element of an array job, whose output is one directory further down."""
+    d = Path(cwd) / ".csub" / "jobs" / str(job_id)
+    return d / str(int(index)) if index else d
 
 
 def tail_file(path: Path, lines: int | None) -> str:
@@ -36,11 +38,21 @@ def tail_file(path: Path, lines: int | None) -> str:
 
 
 def read_logs(
-    cwd: str, job_id: str, *, stream: str = "both", tail: int | None = None
+    cwd: str,
+    job_id: str,
+    *,
+    stream: str = "both",
+    tail: int | None = None,
+    index: int | None = None,
 ) -> dict[str, str]:
-    d = job_dir(cwd, job_id)
+    d = job_dir(cwd, job_id, index)
     if not d.is_dir():
-        raise CsubError("not_found", f"no output directory for job {job_id} at {d}")
+        what = f"element {index} of job {job_id}" if index else f"job {job_id}"
+        raise CsubError("not_found", f"no output directory for {what} at {d}")
+    if not index and not (d / "stdout").exists() and any(e.name.isdigit() for e in d.iterdir()):
+        raise CsubError(
+            "invalid_request", f"job {job_id} is an array job: say which element (index)"
+        )
     out: dict[str, str] = {"job_dir": str(d)}
     if stream in ("stdout", "both"):
         out["stdout"] = tail_file(d / "stdout", tail)

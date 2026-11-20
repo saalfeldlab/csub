@@ -31,6 +31,7 @@ class JobRecord:
     cwd: str
     image: str
     submitted_at: float
+    array_size: int = 0  # elements of an array job; 0 for an ordinary job
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -94,18 +95,24 @@ class StateDir:
         rec = self.record(job_id)
         return (rec.user, rec.session) if rec else None
 
-    def read_exit_code(self, job_id: str) -> int | None:
+    def read_exit_code(self, job_id: str, index: int = 0) -> int | None:
+        """``index`` is the element of an array job (its files are in jobs/<id>/<index>/)."""
+        d = self.job_dir(job_id)
+        if index:
+            d = d / str(index)
         try:
-            text = (self.job_dir(job_id) / EXIT_CODE_NAME).read_text().strip()
+            text = (d / EXIT_CODE_NAME).read_text().strip()
             return int(text)
         except (FileNotFoundError, ValueError):
             return None
 
-    def read_lsf_out(self, job_id: str) -> str:
+    def read_lsf_out(self, job_id: str, index: int = 0) -> str:
         """The tail of the job's LSF output file ('' if there is none), which ends with LSF's
-        resource usage summary once the job has finished."""
+        resource usage summary once the job has finished. ``index`` is the element of an array
+        job (its file is lsf.<index>.out)."""
+        name = f"lsf.{index}.out" if index else "lsf.out"
         try:
-            with open(self.job_dir(job_id) / "lsf.out", "rb") as f:
+            with open(self.job_dir(job_id) / name, "rb") as f:
                 f.seek(0, os.SEEK_END)
                 f.seek(max(0, f.tell() - 8192))
                 return f.read().decode(errors="replace")

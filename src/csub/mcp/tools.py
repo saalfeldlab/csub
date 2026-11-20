@@ -68,8 +68,12 @@ def _kill(client: Client, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _logs(client: Client, args: dict[str, Any]) -> dict[str, Any]:
+    element = {"index": args["index"]} if args.get("index") else {}
     lg = client.logs(
-        args["job_id"], stream=args.get("stream", "both"), tail=args.get("tail_lines", 200)
+        args["job_id"],
+        stream=args.get("stream", "both"),
+        tail=args.get("tail_lines", 200),
+        **element,
     )
     return {"job_id": lg.job_id, "job_dir": lg.job_dir, "stdout": lg.stdout, "stderr": lg.stderr}
 
@@ -98,7 +102,9 @@ TOOLS: dict[str, ToolDef] = {
             "Returns the job_id and the resolved request including estimated_max_cost_usd. "
             "Output appears in <cwd>/.csub/jobs/<job_id>/{stdout,stderr}. From inside a job you "
             "can submit further jobs within this job's mounts, hosts and image; depends_on with "
-            "when='ended' lets a job queue its successor.",
+            "when='ended' lets a job queue its successor. For many runs of one command use "
+            "array=N instead of N submissions: one job_id, CSUB_ARRAY_INDEX = 1..N in each "
+            "element, output in <cwd>/.csub/jobs/<job_id>/<index>/.",
             jobspec_schema(exclude=("mounts", "session")),
             _submit,
         ),
@@ -107,7 +113,8 @@ TOOLS: dict[str, ToolDef] = {
             "States of jobs (PEND, RUN, DONE, EXIT with exit_code, SUSP, UNKNOWN). Omit job_ids "
             "for every job of this session. Prefer csub_wait over polling this. Each entry also "
             "says what the job used: cpu_time_s, run_time_s, max_mem_mb, avg_mem_mb, and "
-            "mem_limit_mb (what it was given). Use them to size the next job.",
+            "mem_limit_mb (what it was given). Use them to size the next job. For an array job "
+            "max_mem_mb and run_time_s are the highest of any element and cpu_time_s is the total.",
             STATUS_ARGS_SCHEMA,
             _status,
             read_only=True,
@@ -131,7 +138,8 @@ TOOLS: dict[str, ToolDef] = {
         ),
         ToolDef(
             "csub_logs",
-            "Read a job's stdout/stderr (last tail_lines lines) from the shared filesystem.",
+            "Read a job's stdout/stderr (last tail_lines lines) from the shared filesystem. For "
+            "an array job give index, the element to read.",
             LOGS_ARGS_SCHEMA,
             _logs,
             read_only=True,

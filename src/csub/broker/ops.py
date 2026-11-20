@@ -34,6 +34,7 @@ class BrokerContext:
             home=os.path.realpath(self.home),
             protected_dirs=self.protected_dirs,
             lookup_job=self.state.lookup,
+            is_array=lambda job_id: bool((rec := self.state.record(job_id)) and rec.array_size),
             parent=self.parent,
         )
 
@@ -62,7 +63,9 @@ def op_submit(req: Request, ctx: BrokerContext) -> dict:
 
     cap = ctx.policy.limits.max_pending_per_session
     if cap:
-        pending = sum(1 for r in ctx.lsf.bjobs(job.job_group) if r.state == "PEND")
+        # Jobs, not elements: an array with pending elements is one pending job. Its width is
+        # bounded by limits.max_array_size.
+        pending = len({r.job_id for r in ctx.lsf.bjobs(job.job_group) if r.state == "PEND"})
         if pending >= cap:
             raise ResolveError(
                 "policy_violation",
@@ -100,6 +103,7 @@ def op_submit(req: Request, ctx: BrokerContext) -> dict:
         cwd=job.cwd,
         image=job.image,
         submitted_at=time.time(),
+        array_size=job.array or 0,
     )
     ctx.state.write_private(dest / META_NAME, json.dumps(record.to_dict()))
     return ok_response(
@@ -134,6 +138,102 @@ def _records_for(req: Request, ctx: BrokerContext) -> dict[str, JobRecord]:
     if missing:
         raise CsubError("not_found", "not csub jobs of this user: " + ", ".join(missing))
     return records
+
+
+FAILED_INDICES_SHOWN = 100
+
+
+def _array_entry(rec: JobRecord | None, rows: list, ctx: BrokerContext, job_id: str) -> dict:
+    """One entry for a whole array job: the state of the array, counts per state, and which
+    elements failed. An element bjobs no longer lists is read from its exit_code file.
+
+    What the array used is one set of figures: the highest peak memory and the longest run time
+    of any element, the CPU time of all of them together, and the memory each was given. There
+    is no average memory for an array.
+
+    ``rec`` is None in the moment between bsub accepting the array and the broker writing its
+    record: the array is then known from bjobs alone, which lists every element."""
+    by_index = {r.index: r for r in rows if r.index}
+    counts: dict[str, int] = {}
+    failed: list[int] = []
+    worst = 0
+    used: list[dict] = []
+    queue = rec.queue if rec else None
+    size = rec.array_size if rec else max(by_index)
+    for i in range(1, size + 1):
+        row = by_index.get(i)
+        code: int | None
+        if row is not None:
+            state = row.state
+            code = 0 if state == "DONE" else row.exit_code
+            if state == "EXIT" and code is None:
+                code = ctx.state.read_exit_code(job_id, i)
+            queue = row.queue or queue
+            used.append(row.usage())
+        else:
+            code = ctx.state.read_exit_code(job_id, i)
+            state = "UNKNOWN" if code is None else ("DONE" if code == 0 else "EXIT")
+            if code is not None:
+                used.append(parse_usage_summary(ctx.state.read_lsf_out(job_id, i)))
+        counts[state] = counts.get(state, 0) + 1
+        if state == "EXIT":
+            failed.append(i)
+            worst = max(worst, code or 1)
+    if any(counts.get(s) for s in ("RUN", "PEND", "SUSP")):
+        # Still going. RUN as soon as anything runs; otherwise what the waiting elements are.
+        state = next(s for s in ("RUN", "PEND", "SUSP") if counts.get(s))
+        exit_code = None
+    elif counts.get("EXIT"):
+        state, exit_code = "EXIT", worst
+    elif counts.get("UNKNOWN"):
+        state, exit_code = "UNKNOWN", None
+    else:
+        state, exit_code = "DONE", 0
+    return {
+        "job_id": job_id,
+        "state": state,
+        "exit_code": exit_code,
+        "queue": queue,
+        "exec_host": None,
+        # bjobs names an element "<job name>[<index>]"
+        "name": rec.name if rec else (rows[0].job_name or "").partition("[")[0] or None,
+        "cwd": rec.cwd if rec else None,
+        "session": rec.session if rec else None,
+        "source": "bjobs" if by_index else "exit_code",
+        "array": {
+            "size": size,
+            "counts": counts,
+            "failed": failed[:FAILED_INDICES_SHOWN],
+        },
+        **_array_usage(used),
+    }
+
+
+def _array_usage(used: list[dict]) -> dict[str, float | None]:
+    def over(field: str, fn) -> float | None:
+        values = [u[field] for u in used if u.get(field) is not None]
+        return round(fn(values), 1) if values else None
+
+    return {
+        "cpu_time_s": over("cpu_time_s", sum),
+        "max_mem_mb": over("max_mem_mb", max),
+        "avg_mem_mb": None,
+        "run_time_s": over("run_time_s", max),
+        "mem_limit_mb": over("mem_limit_mb", max),
+    }
+
+
+def _entry(rec: JobRecord | None, rows: list, ctx: BrokerContext, job_id: str) -> dict:
+    if (rec is not None and rec.array_size) or (rec is None and any(r.index for r in rows)):
+        return _array_entry(rec, rows, ctx, job_id)
+    return _status_entry(rec, rows[-1] if rows else None, ctx, job_id)
+
+
+def _rows_by_job(rows) -> dict[str, list]:
+    out: dict[str, list] = {}
+    for row in rows:
+        out.setdefault(row.job_id, []).append(row)
+    return out
 
 
 def _status_entry(rec: JobRecord | None, row, ctx: BrokerContext, job_id: str) -> dict:
@@ -181,18 +281,18 @@ def op_status(req: Request, ctx: BrokerContext) -> dict:
         by_session: dict[str, list[str]] = {}
         for jid, rec in records.items():
             by_session.setdefault(rec.session, []).append(jid)
-        rows = {}
+        found: list = []
         for session, ids in by_session.items():
-            for row in ctx.lsf.bjobs(_session_group(ctx, session), ids):
-                rows[row.job_id] = row
+            found += ctx.lsf.bjobs(_session_group(ctx, session), ids)
+        rows = _rows_by_job(found)
         for jid, rec in records.items():
-            entries.append(_status_entry(rec, rows.get(jid), ctx, jid))
+            entries.append(_entry(rec, rows.get(jid, []), ctx, jid))
     else:
         assert req.session is not None
-        rows = {r.job_id: r for r in ctx.lsf.bjobs(_session_group(ctx, req.session))}
+        rows = _rows_by_job(ctx.lsf.bjobs(_session_group(ctx, req.session)))
         records = {r.job_id: r for r in ctx.state.list_jobs(ctx.user, req.session)}
         for jid in set(rows) | set(records):
-            entries.append(_status_entry(records.get(jid), rows.get(jid), ctx, jid))
+            entries.append(_entry(records.get(jid), rows.get(jid, []), ctx, jid))
     entries.sort(key=lambda e: int(e["job_id"]))
     return ok_response(jobs=entries)
 

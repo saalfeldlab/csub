@@ -86,6 +86,7 @@ class ResolveContext:
     isdir: Callable[[str], bool] = os.path.isdir
     # job_id -> (user, session) of a job this broker submitted, or None
     lookup_job: Callable[[str], tuple[str, str] | None] = lambda _job_id: None
+    is_array: Callable[[str], bool] = lambda _job_id: False  # is that job an array job
     parent: Parent | None = None  # set in a per-job broker; the submitting job's grants
 
 
@@ -115,7 +116,18 @@ class ResolvedJob:
     sandbox: str  # "podman" or "bwrap"
     depends_on: tuple[Dependency, ...]
     lsf_extra_argv: tuple[str, ...]
-    estimated_max_cost_usd: float
+    estimated_max_cost_usd: float  # per element for an array job
+    array: int | None = None
+    array_concurrent: int | None = None
+    array_deps: frozenset[str] = frozenset()  # the jobs in depends_on that are array jobs
+
+    def _dependency(self, d: Dependency) -> str:
+        # For an array, LSF's exit(ID) holds only when EVERY element failed, and a job whose
+        # condition can no longer hold is ended by LSF. "exit" on an array means what status
+        # reports as EXIT: all elements have ended and at least one failed.
+        if d.when == "exit" and d.job_id in self.array_deps:
+            return f"ended({d.job_id}) && numexit({d.job_id}, >= 1)"
+        return f"{d.when}({d.job_id})"
 
     def bsub_args(self, state_dir: str) -> list[str]:
         args = ["-q", self.queue, "-n", str(self.slots), "-W", str(self.walltime_min)]
@@ -124,19 +136,36 @@ class ResolvedJob:
             if self.gpu_mem_gb:
                 gpu += f":gmem={self.gpu_mem_gb}G"
             args += ["-gpu", gpu]
+        job_name, lsf_out = self.job_name, "lsf.out"
+        if self.array:
+            # Elements 1..N of one job id; %I is the element's index.
+            job_name += f"[1-{self.array}]"
+            if self.array_concurrent:
+                job_name += f"%{self.array_concurrent}"
+            lsf_out = "lsf.%I.out"
         args += [
-            "-J", self.job_name,
+            "-J", job_name,
             "-g", self.job_group,
-            "-o", os.path.join(state_dir, "jobs", "%J", "lsf.out"),
+            "-o", os.path.join(state_dir, "jobs", "%J", lsf_out),
             "-env", "none",
         ]  # fmt: skip
         if self.depends_on:
-            args += ["-w", " && ".join(f"{d.when}({d.job_id})" for d in self.depends_on)]
+            args += ["-w", " && ".join(self._dependency(d) for d in self.depends_on)]
         args += list(self.lsf_extra_argv)
         return args
 
     def to_response(self) -> dict[str, Any]:
+        array: dict[str, Any] = {}
+        if self.array:
+            array = {
+                "array": self.array,
+                "array_concurrent": self.array_concurrent,
+                "estimated_max_cost_usd_total": ceil_cents(
+                    self.estimated_max_cost_usd * self.array
+                ),
+            }
         return {
+            **array,
             "queue": self.queue,
             "slots": self.slots,
             "walltime_min": self.walltime_min,
@@ -540,10 +569,27 @@ def resolve(spec: JobSpec, policy: Policy, ctx: ResolveContext) -> ResolvedJob:
                 f"gpu_mem_gb is only meaningful on mixed-model queues, not {queue.name!r}"
             )
 
+    if spec.array is not None:
+        if not lim.max_array_size:
+            raise _policy("array jobs are not permitted by policy")
+        if spec.array > lim.max_array_size:
+            raise _policy(
+                f"an array of {spec.array} elements exceeds the maximum of {lim.max_array_size}"
+            )
+
     cost = estimate_cost(slots, spec.gpus, walltime, queue, policy)
-    if lim.max_estimated_cost_usd and cost > lim.max_estimated_cost_usd:
+    # The cap bounds one request. An array is one request, so its elements count together.
+    total = cost * (spec.array or 1)
+    if lim.max_estimated_cost_usd and total > lim.max_estimated_cost_usd:
+        each = f"{slots} slots, {spec.gpus} GPUs, {walltime} min"
+        if spec.array:
+            raise _policy(
+                f"estimated maximum cost ${total:.2f} ({spec.array} elements of {each}, "
+                f"${cost:.2f} each) exceeds the per-job cap of ${lim.max_estimated_cost_usd:.2f}; "
+                "use fewer elements or a shorter walltime"
+            )
         raise _policy(
-            f"estimated maximum cost ${cost:.2f} ({slots} slots, {spec.gpus} GPUs, {walltime} min) "
+            f"estimated maximum cost ${cost:.2f} ({each}) "
             f"exceeds the per-job cap of ${lim.max_estimated_cost_usd:.2f}"
         )
 
@@ -593,6 +639,9 @@ def resolve(spec: JobSpec, policy: Policy, ctx: ResolveContext) -> ResolvedJob:
         depends_on=deps,
         lsf_extra_argv=(("-P", policy.lsf.project) if policy.lsf.project else ()) + extra,
         estimated_max_cost_usd=cost,
+        array=spec.array,
+        array_deps=frozenset(d.job_id for d in deps if ctx.is_array(d.job_id)),
+        array_concurrent=spec.array_concurrent,
     )
     if ctx.parent is not None:
         check_parent(job, ctx.parent)

@@ -393,6 +393,14 @@ def test_depends_on(make_spec, policy, ctx):
     args = job.bsub_args("/state")
     assert args[args.index("-w") + 1] == "done(12) && ended(13)"
     reject("not_found", "dependency 14", make_spec(depends_on=["14"]), policy, ok_ctx)
+    # "exit" on an array job: all elements ended and at least one failed
+    arr_ctx = replace(ok_ctx, is_array=lambda job_id: job_id == "13")
+    spec = make_spec(depends_on=[{"job_id": "12", "when": "exit"}, {"job_id": "13", "when": "exit"}])
+    args = resolve(spec, policy, arr_ctx).bsub_args("/state")
+    assert args[args.index("-w") + 1] == "exit(12) && ended(13) && numexit(13, >= 1)"
+    spec = make_spec(depends_on=["13", {"job_id": "13", "when": "ended"}])
+    args = resolve(spec, policy, arr_ctx).bsub_args("/state")
+    assert args[args.index("-w") + 1] == "done(13) && ended(13)"
 
 
 def test_lsf_extra(make_spec, policy, ctx, make_policy):
@@ -517,3 +525,45 @@ def test_agent_jobs(make_spec, policy, ctx, make_policy):
         p,
         ctx,
     )
+
+
+def test_array_job(make_spec, policy, ctx, make_policy):
+    job = resolve(make_spec(name="sweep", array=20, array_concurrent=4), policy, ctx)
+    args = job.bsub_args("/home/u/.csub")
+    assert args[args.index("-J") + 1] == "csub-sweep[1-20]%4"
+    assert args[args.index("-o") + 1] == "/home/u/.csub/jobs/%J/lsf.%I.out"
+    r = job.to_response()
+    assert r["array"] == 20 and r["array_concurrent"] == 4
+    # the response gives the estimate for one element and for the whole array
+    assert r["estimated_max_cost_usd_total"] == pytest.approx(20 * r["estimated_max_cost_usd"])
+
+    job = resolve(make_spec(name="sweep", array=3), policy, ctx)
+    assert job.bsub_args("/s")[job.bsub_args("/s").index("-J") + 1] == "csub-sweep[1-3]"
+
+    plain = resolve(make_spec(name="one"), policy, ctx)
+    assert "array" not in plain.to_response() and plain.array is None
+
+    # the default limit, a lower one, and arrays switched off
+    assert policy.limits.max_array_size == 20000
+    nocap = make_policy(limits={"max_estimated_cost_usd": 0})
+    resolve(make_spec(array=20000), nocap, ctx)
+    with pytest.raises(CsubError, match="exceeds the maximum of 20000") as e:
+        resolve(make_spec(array=20001), nocap, ctx)
+    assert e.value.code == "policy_violation"
+
+    # the cost cap bounds the whole array, not one element
+    cap = policy.limits.max_estimated_cost_usd
+    one = resolve(make_spec(walltime_min=60), policy, ctx).estimated_max_cost_usd
+    fits = int(cap / one)
+    assert fits >= 2
+    resolve(make_spec(walltime_min=60, array=fits), policy, ctx)
+    with pytest.raises(CsubError, match="elements of .* exceeds the per-job cap") as e:
+        resolve(make_spec(walltime_min=60, array=fits + 1), policy, ctx)
+    assert e.value.code == "policy_violation" and f"{fits + 1} elements" in e.value.message
+    small = make_policy(limits={"max_array_size": 10})
+    with pytest.raises(CsubError, match="exceeds the maximum of 10"):
+        resolve(make_spec(array=11), small, ctx)
+    off = make_policy(limits={"max_array_size": 0})
+    with pytest.raises(CsubError, match="array jobs are not permitted"):
+        resolve(make_spec(array=2), off, ctx)
+    resolve(make_spec(), off, ctx)

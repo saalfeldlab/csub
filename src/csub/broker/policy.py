@@ -89,6 +89,10 @@ class Limits:
     # resubmitting (a job queueing its own successor is a supported pattern). The default is
     # deliberately generous: a wide parameter sweep fits, a runaway does not.
     max_pending_per_session: int = 100
+    # Elements one array job may have; 0 forbids array jobs. An array counts as ONE job
+    # against max_pending_per_session, so this is the bound on its width, together with
+    # max_estimated_cost_usd, which applies to all of an array's elements added up.
+    max_array_size: int = 20000
     default_cpu_walltime_min: int = 60
     default_gpu_walltime_min: int = 120
     cpu_short_queue: str = "short"
@@ -185,6 +189,7 @@ _LIMITS_KEYS: dict[str, tuple[str, bool]] = {
     "max_walltime_min": ("int", False),
     "max_estimated_cost_usd": ("float", False),
     "max_pending_per_session": ("int", False),
+    "max_array_size": ("int", False),
     "default_cpu_walltime_min": ("int", False),
     "default_gpu_walltime_min": ("int", False),
     "cpu_short_queue": ("str", False),
@@ -400,6 +405,7 @@ def parse_policy(  # noqa: C901 - one validator
         _positive(lim, key, lwhere)
     _positive(lim, "max_estimated_cost_usd", lwhere, minimum=0)
     _positive(lim, "max_pending_per_session", lwhere, minimum=0)
+    _positive(lim, "max_array_size", lwhere, minimum=0)
     _positive(lim, "slot_price_usd_per_hour", lwhere, minimum=0)
     limits = Limits(**lim)
 

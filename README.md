@@ -156,9 +156,55 @@ Policy rejections come back as tool errors, so the agent can fix its request.
 | `mounts`       | `{path, mode}`; filled in by the client from `CSUB_MOUNTS`         |
 | `session`      | job group; filled in by the client                                 |
 | `lsf_extra`    | extra `bsub` flags, one per entry (`-flag` or `-flag value`); only flags the policy lists |
+| `array`        | an array job of this many elements, numbered 1 to `array`; see [Array jobs](#array-jobs) |
+| `array_concurrent` | with `array`: at most this many elements running at once       |
 
 The broker answers with the job id and the resolved request: queue, slots, walltime, mounts and
 an estimated maximum cost.
+
+## Array jobs
+
+`array: N` (CLI: `--array N`) submits one job with N elements, numbered 1 to N. Every element
+runs the same command in its own sandbox, exactly as a single job does, with `CSUB_ARRAY_INDEX`
+set to its number and `CSUB_ARRAY_SIZE` to N. `array_concurrent: M` (`--array-concurrent M`)
+keeps at most M of them running at once.
+
+```
+csub submit --array 200 --array-concurrent 20 -- python sweep.py
+csub status                      # one line per array: RUN 37/200 done, 2 failed
+csub logs 123456 --index 17      # one element's output
+csub kill 123456                 # every element
+```
+
+- **One job id.** Status reports the array as a whole, with a count per state and the indices
+  that failed (the first 100): `RUN` while anything runs, then `EXIT` if any element failed,
+  else `DONE`. The exit code is the highest of its elements. Kill and `depends_on` take the
+  array's id; a single element cannot be killed or depended on. A dependency on an array
+  follows that state: `done` waits for every element to succeed, `exit` for the array to end
+  with at least one failed element, `ended` for every element to end.
+- **Output** of element `i` is in `<cwd>/.csub/jobs/<job_id>/<i>/stdout` and `stderr`.
+- **What it used.** The figures `csub status` reports are for the array as a whole: the highest
+  peak memory and the longest run time of any element, the CPU time of all elements together,
+  and the memory each element was given. There is no average memory for an array.
+- **Limits.** `limits.max_array_size` bounds N (default 20000; 0 forbids array jobs). The cost
+  cap (`max_estimated_cost_usd`) applies to the whole array, since an array is one request: the
+  elements' estimates are added up. The response gives the estimate for one element and for
+  the array. A pending array counts as one job against `max_pending_per_session`.
+- **Child jobs.** An element can submit jobs like any other job, array jobs included.
+
+To rerun the elements that failed, submit a second, smaller array whose elements look up which
+original index they stand for. Status names the failed indices (the first 100):
+
+```
+csub --json status 123456        # "array": {"failed": [3, 17, 42], ...}
+printf '3\n17\n42\n' > failed.txt
+csub submit --array 3 -- sh -c 'python sweep.py --index "$(sed -n "${CSUB_ARRAY_INDEX}p" failed.txt)"'
+```
+
+Element 1 of the new array reruns index 3, element 2 reruns 17, and so on, so the program must
+take its index as an argument. The same pattern runs any sparse set of indices. The rerun is a
+new job with its own id and output directory. Index lists (`--array 3,17,42`) and rerunning
+failed elements in place are not supported.
 
 ## Inside a job
 
@@ -169,6 +215,8 @@ wrapper mounts the installed client into the container.
 | variable              | value                                          |
 | --------------------- | ---------------------------------------------- |
 | `CSUB_JOB_ID`         | this job's id                                  |
+| `CSUB_ARRAY_INDEX`    | in an array job: this element's number, from 1 |
+| `CSUB_ARRAY_SIZE`     | in an array job: the number of elements        |
 | `CSUB_WALLTIME_MIN`   | the job's walltime                             |
 | `CSUB_DEADLINE_EPOCH` | when the job will be killed (Unix time)        |
 | `CSUB_MOUNTS`         | this job's mounts (the default for child jobs) |
@@ -210,6 +258,7 @@ max_gpus = 4
 max_walltime_min = 2880
 max_estimated_cost_usd = 50               # per job; 0 = no cap
 max_pending_per_session = 100             # pending jobs per session before submit is refused; 0 = no cap
+max_array_size = 20000                    # elements per array job; 0 = no array jobs
 slot_price_usd_per_hour = 0.05
 cpu_short_queue = "short"                 # used when walltime fits its maximum
 cpu_default_queue = "long"
