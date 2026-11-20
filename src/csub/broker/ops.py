@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import csub
 from csub import __version__
-from csub.broker.lsf import LsfRunner
+from csub.broker.lsf import LsfRunner, parse_usage_summary
 from csub.broker.policy import Policy
 from csub.broker.resolve import Parent, ResolveContext, ResolveError, parent_probe, resolve
 from csub.broker.state import META_NAME, REQUEST_NAME, WRAPPER_NAME, JobRecord, StateDir
@@ -149,6 +149,7 @@ def _status_entry(rec: JobRecord | None, row, ctx: BrokerContext, job_id: str) -
             exit_code = None
         source = "bjobs"
         queue, exec_host = row.queue, row.exec_host
+        usage = row.usage()
     else:
         exit_code = ctx.state.read_exit_code(job_id)
         if exit_code is None:
@@ -157,6 +158,8 @@ def _status_entry(rec: JobRecord | None, row, ctx: BrokerContext, job_id: str) -
             state, source = ("DONE" if exit_code == 0 else "EXIT"), "exit_code"
         queue = rec.queue if rec else None
         exec_host = None
+        # bjobs has forgotten the job: LSF's own summary in the job's output file remains.
+        usage = parse_usage_summary(ctx.state.read_lsf_out(job_id))
     return {
         "job_id": job_id,
         "state": state,
@@ -167,6 +170,7 @@ def _status_entry(rec: JobRecord | None, row, ctx: BrokerContext, job_id: str) -
         "cwd": rec.cwd if rec else None,
         "session": rec.session if rec else None,
         "source": source,
+        **usage,
     }
 
 

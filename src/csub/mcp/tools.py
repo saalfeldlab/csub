@@ -105,7 +105,9 @@ TOOLS: dict[str, ToolDef] = {
         ToolDef(
             "csub_status",
             "States of jobs (PEND, RUN, DONE, EXIT with exit_code, SUSP, UNKNOWN). Omit job_ids "
-            "for every job of this session. Prefer csub_wait over polling this.",
+            "for every job of this session. Prefer csub_wait over polling this. Each entry also "
+            "says what the job used: cpu_time_s, run_time_s, max_mem_mb, avg_mem_mb, and "
+            "mem_limit_mb (what it was given). Use them to size the next job.",
             STATUS_ARGS_SCHEMA,
             _status,
             read_only=True,

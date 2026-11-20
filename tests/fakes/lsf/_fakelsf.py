@@ -439,7 +439,19 @@ def run_job(job_id: str) -> int:
     elif term_reason == "TERM_RUNLIMIT":
         epilogue.append("TERM_RUNLIMIT: job killed after reaching LSF run time limit.")
     epilogue.append("Successfully completed." if rc == 0 else f"Exited with exit code {rc}.")
-    epilogue += ["", "Resource usage summary:", "", "    CPU time :   0.00 sec.", ""]
+    run_s = int(time.time() - job["start_time"])
+    epilogue += [
+        "",
+        "Resource usage summary:",
+        "",
+        "    CPU time :                                   0.50 sec.",
+        "    Max Memory :                                 12 MB",
+        "    Average Memory :                             8.00 MB",
+        f"    Total Requested Memory :                     {15360 * job['slots']}.00 MB",
+        "    Max Swap :                                   -",
+        f"    Run time :                                   {run_s} sec.",
+        "",
+    ]
     if out_path:
         out.write(("\n".join(epilogue) + "\n").encode())
     out.close()
@@ -476,6 +488,20 @@ def _field(job: dict, name: str) -> str:
         return _fmt_time(job["submit_time"])
     if name == "from_host":
         return "fakesubmit"
+    # What the job used, in bjobs' own wording. The fake has no real figures: a finished or
+    # running job reports fixed ones, a pending job "-" like LSF.
+    started = job["start_time"] is not None
+    if name == "cpu_used":
+        return "0.5 second(s)" if job["status"] in ("DONE", "EXIT") and started else "-"
+    if name == "max_mem":
+        return "12 Mbytes" if started else "-"
+    if name == "avg_mem":
+        return "8 Mbytes" if started else "-"
+    if name == "run_time":
+        end = job["end_time"] or time.time()
+        return f"{int(end - job['start_time']) if started else 0} second(s)"
+    if name == "memlimit":
+        return f"{15 * job['slots']} G"
     raise ValueError(f"bjobs: unknown field {name}")
 
 

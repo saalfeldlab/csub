@@ -74,7 +74,7 @@ csub submit --gpus 1 -q gpu --walltime 120 --name finetune -- python finetune.py
 csub submit --allow pypi.org --scratch --walltime 20 -- sh -c 'pip install --user x && python run.py'
 csub submit --wait -- python check.py              # submit, wait, print output
 
-csub status                                        # all jobs of this session
+csub status                                        # all jobs of this session, with what each used
 csub wait 1234 1235 --timeout 600
 csub logs 1234 --tail 50
 csub kill 1234
@@ -82,6 +82,13 @@ csub kill 1234
 
 Size jobs in `--cpus`, `--mem` and `--walltime`. The broker converts them into LSF slots and
 picks a CPU queue from the walltime. GPU jobs name a GPU queue.
+
+`csub status` also reports what each job used, so the next one can be sized from it: CPU time,
+run time, the most memory it used (`MAXMEM`) and the memory it was given (`MEMLIM`). With
+`--json` and in the Python and MCP results these are `cpu_time_s`, `run_time_s`, `max_mem_mb`,
+`avg_mem_mb` and `mem_limit_mb`. The figures are LSF's: from `bjobs` while it lists the job, and
+afterwards from the summary LSF wrote at the end of the job's output. A figure LSF does not have,
+such as anything for a job still pending, is empty.
 
 Exit codes: 0 ok, 1 job failed, 2 invalid request, 3 policy violation, 4 transport error,
 5 LSF error, 6 not found, 7 broker misconfigured, 124 timeout.

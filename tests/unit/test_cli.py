@@ -205,16 +205,24 @@ def test_status_table_and_empty():
     ]
     rc, out, _ = run(c, "status", "1", "2")
     lines = out.splitlines()
-    assert rc == 0 and lines[0].split() == ["JOBID", "STATE", "EXIT", "QUEUE", "HOST", "NAME"]
-    assert lines[1].split() == ["1", "RUN", "-", "short", "h1", "a"] and lines[2].split() == [
-        "2",
-        "EXIT",
-        "130",
-        "-",
-        "-",
-        "b",
-    ]
+    assert rc == 0 and lines[0].split() == [
+        "JOBID", "STATE", "EXIT", "QUEUE", "HOST", "CPU", "RUNTIME", "MAXMEM", "MEMLIM", "NAME",
+    ]  # fmt: skip
+    assert lines[1].split() == ["1", "RUN", "-", "short", "h1", "-", "-", "-", "-", "a"]
+    assert lines[2].split() == ["2", "EXIT", "130", "-", "-", "-", "-", "-", "-", "b"]
     assert c.calls[-1] == ("status", ["1", "2"])
+    c.statuses = [
+        JobStatus(
+            "3", "DONE", exit_code=0, queue="short", exec_host="h1", name="c",
+            cpu_time_s=1131.1, run_time_s=62.0, max_mem_mb=6963.2, mem_limit_mb=15360.0,
+        ),
+        JobStatus("4", "RUN", name="d", cpu_time_s=0.7, run_time_s=33.0, max_mem_mb=311.0),
+    ]  # fmt: skip
+    lines = run(c, "status")[1].splitlines()
+    assert lines[1].split() == [
+        "3", "DONE", "0", "short", "h1", "0:18:51", "62s", "6.8G", "15.0G", "c",
+    ]  # fmt: skip
+    assert lines[2].split() == ["4", "RUN", "-", "-", "-", "0.7s", "33s", "311M", "-", "d"]
     c.statuses = []
     assert run(c, "status")[1] == "no jobs\n" and c.calls[-1] == ("status", None)
     c.statuses = [JobStatus("1", "RUN")]
