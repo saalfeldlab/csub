@@ -231,8 +231,25 @@ def _plural(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
 
+def _fmt_seconds(s: float | None) -> str:
+    if s is None:
+        return "-"
+    if s < 100:
+        return f"{s:.1f}s" if s != int(s) else f"{int(s)}s"
+    return f"{int(s // 3600)}:{int(s % 3600 // 60):02d}:{int(s % 60):02d}"
+
+
+def _fmt_mb(mb: float | None) -> str:
+    if mb is None:
+        return "-"
+    return f"{mb / 1024:.1f}G" if mb >= 1024 else f"{mb:.0f}M"
+
+
 def format_status_table(entries) -> str:
-    rows = [("JOBID", "STATE", "EXIT", "QUEUE", "HOST", "NAME")]
+    # MAXMEM/MEMLIM: the most memory the job used, and what it was given.
+    rows = [
+        ("JOBID", "STATE", "EXIT", "QUEUE", "HOST", "CPU", "RUNTIME", "MAXMEM", "MEMLIM", "NAME")
+    ]
     for e in entries:
         rows.append(
             (
@@ -241,6 +258,10 @@ def format_status_table(entries) -> str:
                 "-" if e.exit_code is None else str(e.exit_code),
                 e.queue or "-",
                 e.exec_host or "-",
+                _fmt_seconds(getattr(e, "cpu_time_s", None)),
+                _fmt_seconds(getattr(e, "run_time_s", None)),
+                _fmt_mb(getattr(e, "max_mem_mb", None)),
+                _fmt_mb(getattr(e, "mem_limit_mb", None)),
                 e.name or "-",
             )
         )

@@ -101,6 +101,17 @@ class StateDir:
         except (FileNotFoundError, ValueError):
             return None
 
+    def read_lsf_out(self, job_id: str) -> str:
+        """The tail of the job's LSF output file ('' if there is none), which ends with LSF's
+        resource usage summary once the job has finished."""
+        try:
+            with open(self.job_dir(job_id) / "lsf.out", "rb") as f:
+                f.seek(0, os.SEEK_END)
+                f.seek(max(0, f.tell() - 8192))
+                return f.read().decode(errors="replace")
+        except (FileNotFoundError, ValueError):
+            return ""
+
     def list_jobs(self, user: str, session: str | None = None) -> list[JobRecord]:
         out: list[JobRecord] = []
         for entry in self.jobs_dir.iterdir():

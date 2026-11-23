@@ -586,6 +586,12 @@ class JobStatus:
     cwd: str | None = None
     session: str | None = None
     source: str = "bjobs"
+    # What the job used, from LSF; None where LSF has no figure (a pending job, for example).
+    cpu_time_s: float | None = None
+    max_mem_mb: float | None = None
+    avg_mem_mb: float | None = None
+    run_time_s: float | None = None
+    mem_limit_mb: float | None = None  # the memory the job was given, to compare max_mem_mb with
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> JobStatus:
