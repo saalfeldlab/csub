@@ -84,7 +84,7 @@ def test_full_roundtrip():
         ({"env": {"A": 1}}, "expected string"),
         ({"allow_hosts": ["not a host"]}, "not a hostname"),
         ({"allow_hosts": ["http://x.org"]}, "not a hostname"),
-        ({"depends_on": ["12[3]"]}, "array jobs"),
+        ({"depends_on": ["12[3]"]}, "element of an array job"),
         ({"depends_on": ["abc"]}, "not a job id"),
         ({"depends_on": [{"job_id": "1", "when": "later"}]}, "when"),
         ({"mounts": [{"path": "/a"}, {"path": "/a", "mode": "ro"}]}, "duplicate"),
@@ -227,3 +227,23 @@ def test_schema_is_valid_jsonschema():
     jsonschema.validate(minimal(cpus=2), JOBSPEC_SCHEMA)
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(minimal(bogus=1), JOBSPEC_SCHEMA)
+
+
+def test_array_fields():
+    spec = JobSpec.from_dict({"command": ["true"], "array": 20, "array_concurrent": 4})
+    assert spec.array == 20 and spec.array_concurrent == 4
+    d = spec.to_dict()
+    assert d["array"] == 20 and d["array_concurrent"] == 4
+    assert JobSpec.from_dict(d) == spec
+    plain = JobSpec.from_dict({"command": ["true"]})
+    assert plain.array is None and "array" not in plain.to_dict()
+    for bad, match in (
+        ({"array": 0}, "array: must be >= 1"),
+        ({"array": "3"}, "array: expected integer"),
+        ({"array": True}, "array: expected integer"),
+        ({"array": 1_000_001}, "more than 1000000 elements"),
+        ({"array_concurrent": 2}, "array_concurrent: requires array"),
+        ({"array": 3, "array_concurrent": 0}, "array_concurrent: must be >= 1"),
+    ):
+        with pytest.raises(ProtocolError, match=match):
+            JobSpec.from_dict({"command": ["true"], **bad})

@@ -19,13 +19,16 @@ from csub.protocol import CsubError
 BSUB_SUBMITTED_RE = re.compile(r"Job <(\d+)> is submitted to (?:default )?queue <([^>]+)>\.")
 BSUB_BILLING_RE = re.compile(r"This job will be billed to (\S+)")
 BJOBS_FIELDS = (
-    "jobid", "stat", "exit_code", "queue", "exec_host", "job_name",
+    "jobid", "jobindex", "stat", "exit_code", "queue", "exec_host", "job_name",
     "cpu_used", "max_mem", "avg_mem", "run_time", "memlimit",
 )  # fmt: skip
 BJOBS_NOT_FOUND_RE = re.compile(r"(No (unfinished |matching |)job|is not found|No job group)", re.I)
-BKILL_TERMINATED_RE = re.compile(r"Job <(\d+)> is being terminated")
-BKILL_FINISHED_RE = re.compile(r"Job <(\d+)>: Job has already finished")
-BKILL_NOT_FOUND_RE = re.compile(r"Job <(\d+)>: No matching job found")
+# An element of an array job is named <id[index]>; a kill of a whole array is answered on
+# stderr with "Operation is in progress" (the elements end one by one). LSF 10.1.
+BKILL_TERMINATED_RE = re.compile(r"Job <(\d+)(?:\[\d+\])?> is being terminated")
+BKILL_IN_PROGRESS_RE = re.compile(r"Job <(\d+)(?:\[\d+\])?>: Operation is in progress")
+BKILL_FINISHED_RE = re.compile(r"Job <(\d+)(?:\[\d+\])?>: Job has already finished")
+BKILL_NOT_FOUND_RE = re.compile(r"Job <(\d+)(?:\[\d+\])?>: No matching job found")
 
 # What a job used, as bjobs -o prints it: "0.7 second(s)", "311 Mbytes", "6.8 Gbytes", "15 G";
 # "-" where LSF has no figure (yet). LSF's job summary in lsf.out says "1.09 sec.", "47 MB".
@@ -105,6 +108,7 @@ class BjobsRow:
     queue: str | None
     exec_host: str | None
     job_name: str | None
+    index: int = 0  # element of an array job; 0 for an ordinary job
     cpu_time_s: float | None = None
     max_mem_mb: float | None = None
     avg_mem_mb: float | None = None
@@ -192,10 +196,11 @@ class LsfRunner:
             parts = line.rstrip("\n").split("|")
             if len(parts) != len(BJOBS_FIELDS) or not parts[0].isdigit():
                 continue
-            jobid, stat, exit_code, queue, exec_host, job_name = parts[:6]
-            cpu_used, max_mem, avg_mem, run_time, memlimit = parts[6:]
+            jobid, jobindex, stat, exit_code, queue, exec_host, job_name = parts[:7]
+            cpu_used, max_mem, avg_mem, run_time, memlimit = parts[7:]
             rows.append(
                 BjobsRow(
+                    index=int(jobindex) if jobindex.isdigit() else 0,
                     cpu_time_s=parse_seconds(cpu_used),
                     max_mem_mb=parse_mb(max_mem),
                     avg_mem_mb=parse_mb(avg_mem),
@@ -214,11 +219,16 @@ class LsfRunner:
         return rows
 
     def bkill(self, group: str, job_ids: list[str] | None) -> dict[str, str]:
-        """Return job_id -> 'killed' | 'finished' | 'not_found'. None/[] kills the whole group."""
+        """Return job_id -> 'killed' | 'finished' | 'not_found'. None/[] kills the whole group.
+
+        An array job is one id: 'killed' if any of its elements was.
+        """
         args = ["-g", group, *(job_ids or ["0"])]
         cp = self._exec(self.cfg.bkill, args)
         out: dict[str, str] = {}
         for m in BKILL_TERMINATED_RE.finditer(cp.stdout):
+            out[m.group(1)] = "killed"
+        for m in BKILL_IN_PROGRESS_RE.finditer(cp.stderr):
             out[m.group(1)] = "killed"
         for m in BKILL_FINISHED_RE.finditer(cp.stderr):
             out[m.group(1)] = "finished"

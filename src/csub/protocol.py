@@ -44,6 +44,7 @@ LIMITS = {
     "max_depends": 64,
     "max_name_len": 256,
     "max_lsf_extra": 32,
+    "max_array": 1_000_000,
     "max_request_bytes": 4 << 20,
 }
 
@@ -142,7 +143,9 @@ def _no_unknown(d: dict[str, Any], allowed: set[str], where: str) -> None:
 def _job_id(value: Any, where: str) -> str:
     s = _str(value, where, min_len=1)
     if ARRAY_JOB_ID_RE.match(s):
-        raise ProtocolError(f"{where}: array jobs are not supported")
+        raise ProtocolError(
+            f"{where}: an element of an array job cannot be named; use the array's job id"
+        )
     if not JOB_ID_RE.match(s):
         raise ProtocolError(f"{where}: not a job id: {s!r}")
     return s
@@ -227,6 +230,8 @@ class JobSpec:
     mounts: tuple[Mount, ...] = ()
     session: str | None = None
     lsf_extra: tuple[str, ...] = ()
+    array: int | None = None  # an array job with elements 1..array
+    array_concurrent: int | None = None  # at most this many elements running at once
 
     @classmethod
     def from_dict(cls, d: Any, where: str = "job") -> JobSpec:  # noqa: C901 - one validator
@@ -357,6 +362,17 @@ class JobSpec:
             ):
                 lsf_extra.append(_str(x, f"{where}.lsf_extra[{i}]", min_len=1, max_len=1024))
 
+        array = None
+        if "array" in d:
+            array = _int(d["array"], f"{where}.array", minimum=1)
+            if array > LIMITS["max_array"]:
+                raise ProtocolError(f"{where}.array: more than {LIMITS['max_array']} elements")
+        array_concurrent = None
+        if "array_concurrent" in d:
+            if array is None:
+                raise ProtocolError(f"{where}.array_concurrent: requires array")
+            array_concurrent = _int(d["array_concurrent"], f"{where}.array_concurrent", minimum=1)
+
         return cls(
             command=command,
             shell=shell,
@@ -377,6 +393,8 @@ class JobSpec:
             mounts=tuple(mounts),
             session=session,
             lsf_extra=tuple(lsf_extra),
+            array=array,
+            array_concurrent=array_concurrent,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -394,7 +412,17 @@ class JobSpec:
             "mounts": [m.to_dict() for m in self.mounts],
             "lsf_extra": list(self.lsf_extra),
         }
-        for key in ("cwd", "name", "gpu_mem_gb", "walltime_min", "queue", "image", "session"):
+        for key in (
+            "cwd",
+            "name",
+            "gpu_mem_gb",
+            "walltime_min",
+            "queue",
+            "image",
+            "session",
+            "array",
+            "array_concurrent",
+        ):
             value = getattr(self, key)
             if value is not None:
                 out[key] = value
@@ -566,6 +594,10 @@ class SubmitResult:
     depends_on: list[dict[str, str]] = field(default_factory=list)
     estimated_max_cost_usd: float = 0.0
     billing_group: str | None = None
+    array: int | None = None  # element count of an array job
+    array_concurrent: int | None = None
+    # For an array job: estimated_max_cost_usd is per element, this is all elements together.
+    estimated_max_cost_usd_total: float | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> SubmitResult:
@@ -592,6 +624,9 @@ class JobStatus:
     avg_mem_mb: float | None = None
     run_time_s: float | None = None
     mem_limit_mb: float | None = None  # the memory the job was given, to compare max_mem_mb with
+    # An array job: {"size": N, "counts": {state: n}, "failed": [indices]}. state above is then
+    # the array's as a whole and exit_code the highest of its elements.
+    array: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> JobStatus:
@@ -808,6 +843,22 @@ JOBSPEC_SCHEMA: dict[str, Any] = {
             "description": "Job group component; filled in by the client.",
             "type": "string",
         },
+        "array": {
+            "description": (
+                "Submit an array job with this many elements, numbered 1..array. Every element "
+                "runs the same command with CSUB_ARRAY_INDEX set to its number; its output is in "
+                "<cwd>/.csub/jobs/<job_id>/<index>/{stdout,stderr}. One job_id covers the array: "
+                "status reports counts per state, kill ends every element. Limited by "
+                "limits.max_array_size (see csub_probe); the cost cap applies to the whole array."
+            ),
+            "type": "integer",
+            "minimum": 1,
+        },
+        "array_concurrent": {
+            "description": "With array: run at most this many elements at the same time.",
+            "type": "integer",
+            "minimum": 1,
+        },
         "lsf_extra": {
             "description": (
                 "Extra bsub flags, one per entry as '-flag' or '-flag value'; only flags the "
@@ -872,6 +923,11 @@ LOGS_ARGS_SCHEMA: dict[str, Any] = {
     "required": ["job_id"],
     "properties": {
         "job_id": {"type": "string", "pattern": "^[0-9]+$"},
+        "index": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "For an array job: which element's output (required for arrays).",
+        },
         "stream": {"type": "string", "enum": ["stdout", "stderr", "both"], "default": "both"},
         "tail_lines": {"type": "integer", "minimum": 0, "default": 200},
     },

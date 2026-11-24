@@ -72,17 +72,17 @@ def test_bsub_timeout_and_missing():
 
 def test_bjobs_rows():
     out = (
-        "1|RUN|-|short|4*h01:4*h02|csub-a|-|311 Mbytes|213 Mbytes|20 second(s)|15 G\n"
-        "2|EXIT|3|gpu_l4|h03|csub-b|1131.1 second(s)|6.8 Gbytes|3.5 Gbytes|62 second(s)|-\n"
-        "3|DONE|-|local|h04|-|0.7 second(s)|311 Mbytes|227 Mbytes|33 second(s)|15 G\n"
-        "4|PSUSP|-|local|-|x|-|-|-|0 second(s)|720 G\nJOBID junk\n"
+        "1|0|RUN|-|short|4*h01:4*h02|csub-a|-|311 Mbytes|213 Mbytes|20 second(s)|15 G\n"
+        "2|0|EXIT|3|gpu_l4|h03|csub-b|1131.1 second(s)|6.8 Gbytes|3.5 Gbytes|62 second(s)|-\n"
+        "3|0|DONE|-|local|h04|-|0.7 second(s)|311 Mbytes|227 Mbytes|33 second(s)|15 G\n"
+        "4|0|PSUSP|-|local|-|x|-|-|-|0 second(s)|720 G\nJOBID junk\n"
     )
     lsf, r = runner((0, out, ""))
     rows = lsf.bjobs("/csub/u/s", ["1", "2"])
     argv, _ = r.calls[0]
     assert argv[:4] == ["/x/bjobs", "-a", "-noheader", "-o"]
     assert argv[4] == (
-        "jobid stat exit_code queue exec_host job_name "
+        "jobid jobindex stat exit_code queue exec_host job_name "
         'cpu_used max_mem avg_mem run_time memlimit delimiter="|"'
     )
     assert argv[5:] == ["-g", "/csub/u/s", "1", "2"]
@@ -131,9 +131,9 @@ def test_bkill_parsing():
 
 def test_bjobs_usage():
     out = (
-        "1|RUN|-|short|h01|a|-|311 Mbytes|213 Mbytes|20 second(s)|15 G\n"
-        "2|EXIT|3|gpu_l4|h03|b|1131.1 second(s)|6.8 Gbytes|3.5 Gbytes|62 second(s)|-\n"
-        "3|PEND|-|local|-|c|-|-|-|0 second(s)|720 G\n"
+        "1|0|RUN|-|short|h01|a|-|311 Mbytes|213 Mbytes|20 second(s)|15 G\n"
+        "2|0|EXIT|3|gpu_l4|h03|b|1131.1 second(s)|6.8 Gbytes|3.5 Gbytes|62 second(s)|-\n"
+        "3|0|PEND|-|local|-|c|-|-|-|0 second(s)|720 G\n"
     )
     lsf, _ = runner((0, out, ""))
     running, failed, pending = lsf.bjobs("/g")
@@ -201,3 +201,33 @@ def test_parse_usage_summary():
     # a job that never ran has a summary with no figures
     killed = "Resource usage summary:\n\n    CPU time :   -\n    Max Memory :   -\n"
     assert parse_usage_summary(killed) == nothing
+
+
+def test_bjobs_array_elements():
+    # Every element of an array is a row with the array's job id and its own index.
+    out = (
+        "7|1|DONE|-|short|h01|csub-a[1]|-|-|-|0 second(s)|15 G\n7|2|EXIT|3|short|h02|csub-a[2]|-|-|-|0 second(s)|15 G\n"
+        "7|3|PEND|-|short|-|csub-a[3]|-|-|-|0 second(s)|15 G\n"
+    )
+    lsf, _ = runner((0, out, ""))
+    rows = lsf.bjobs("/g", ["7"])
+    assert [(x.job_id, x.index, x.state, x.exit_code) for x in rows] == [
+        ("7", 1, "DONE", None),
+        ("7", 2, "EXIT", 3),
+        ("7", 3, "PEND", None),
+    ]
+
+
+def test_bkill_array():
+    # A whole array by its id: one answer on stderr (LSF 10.1).
+    lsf, _ = runner((0, "", "Job <7>: Operation is in progress\n"))
+    assert lsf.bkill("/g", ["7"]) == {"7": "killed"}
+    # The whole group: one line per element, named id[index].
+    out = (
+        "Job <7[1]> is being terminated\nJob <7[2]> is being terminated\n"
+        "Job <8> is being terminated\n"
+    )
+    lsf, _ = runner((0, out, ""))
+    assert lsf.bkill("/g", None) == {"7": "killed", "8": "killed"}
+    lsf, _ = runner((255, "", "Job <7>: Job has already finished\n"))
+    assert lsf.bkill("/g", ["7"]) == {"7": "finished"}

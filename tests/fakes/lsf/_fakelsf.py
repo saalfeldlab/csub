@@ -38,9 +38,12 @@ VALUE_FLAGS = {
     "-cwd", "-R", "-P", "-M", "-app", "-m", "-u", "-sp", "-Jd", "-G", "-L",
 }  # fmt: skip
 BOOL_FLAGS = {"-Is", "-I", "-Ip", "-XF", "-K", "-H", "-N", "-B", "-r", "-x", "-h", "-V", "-a"}
-DEP_RE = re.compile(r"^\s*(done|ended|exit)\((\d+)\)\s*$")
+DEP_RE = re.compile(r"^\s*(done|ended|exit|numexit)\((\d+)(?:\s*,\s*>=\s*1)?\)\s*$")
+# -J "name[1-N]" or "name[1-N]%M": an array job of N elements, at most M running at once.
+ARRAY_NAME_RE = re.compile(r"^(.*)\[1-(\d+)\](?:%(\d+))?$")
 FIELD_WIDTHS = {
     "jobid": 7,
+    "jobindex": 8,
     "stat": 5,
     "exit_code": 10,
     "queue": 10,
@@ -106,6 +109,12 @@ def read_state() -> dict:
 
 def _user() -> str:
     return pwd.getpwuid(os.getuid()).pw_name
+
+
+def _members(jobs: dict, job_id: str) -> list[dict]:
+    """The state entries of one job id: one for an ordinary job, one per element of an array
+    (stored under "<id>[<index>]")."""
+    return sorted((j for j in jobs.values() if j["id"] == job_id), key=lambda j: j.get("index", 0))
 
 
 # --- bsub -------------------------------------------------------------------------------
@@ -233,7 +242,7 @@ def cmd_bsub(argv: list[str], stdin) -> int:
     wd = work_dir()
     with locked_state() as state:
         for _cond, dep_id in deps:
-            if dep_id not in state["jobs"]:
+            if not _members(state["jobs"], dep_id):
                 return _die("Dependency condition invalid or never satisfied. Job not submitted.")
         job_id = str(state["next_id"])
         state["next_id"] += 1
@@ -242,50 +251,62 @@ def cmd_bsub(argv: list[str], stdin) -> int:
         os.chmod(spool, 0o700)
         out = last("-oo") or last("-o")
         err = last("-eo") or last("-e")
-        state["jobs"][job_id] = {
-            "id": job_id,
-            "name": last("-J", os.path.basename(positionals[0]) if positionals else "script"),
-            "queue": queue,
-            "default_queue": default_queue,
-            "group": last("-g"),
-            "slots": slots,
-            "gpus": gpus,
-            "gmem_gb": gmem,
-            "walltime_min": walltime,
-            "deps": deps,
-            "out": out.replace("%J", job_id).replace("%I", "0") if out else None,
-            "err": err.replace("%J", job_id).replace("%I", "0") if err else None,
-            "out_overwrite": "-oo" in opts,
-            "env_mode": last("-env", "all"),
-            "cwd": last("-cwd", os.getcwd()),
-            "argv": argv,
-            "extra": {
-                k: v for k, v in opts.items() if k in ("-R", "-P", "-M", "-app", "-m", "-We")
-            },
-            "spool": str(spool),
-            "status": "PEND",
-            "submit_time": time.time(),
-            "start_time": None,
-            "end_time": None,
-            "exit_code": None,
-            "term_reason": None,
-            "runner_pid": None,
-            "pgid": None,
-            "exec_host": None,
-            "kill_requested": False,
-            "user": _user(),
-        }
-    log = open(wd / "runner" / f"{job_id}.log", "ab")
-    proc = subprocess.Popen(
-        [sys.executable, "-I", os.path.abspath(__file__), "--run", job_id],
-        stdin=subprocess.DEVNULL,
-        stdout=log,
-        stderr=log,
-        start_new_session=True,
-        close_fds=True,
-    )
-    with locked_state() as state:
-        state["jobs"][job_id]["runner_pid"] = proc.pid
+        name = last("-J", os.path.basename(positionals[0]) if positionals else "script")
+        am = ARRAY_NAME_RE.match(name)
+        # (state key, index, element name); index 0 is an ordinary job
+        elements = [(job_id, 0, name)]
+        if am:
+            elements = [
+                (f"{job_id}[{i}]", i, f"{am.group(1)}[{i}]") for i in range(1, int(am.group(2)) + 1)
+            ]
+        for key, index, element_name in elements:
+            state["jobs"][key] = {
+                "id": job_id,
+                "index": index,
+                "array_limit": int(am.group(3)) if am and am.group(3) else None,
+                "name": element_name,
+                "queue": queue,
+                "default_queue": default_queue,
+                "group": last("-g"),
+                "slots": slots,
+                "gpus": gpus,
+                "gmem_gb": gmem,
+                "walltime_min": walltime,
+                "deps": deps,
+                "out": out.replace("%J", job_id).replace("%I", str(index)) if out else None,
+                "err": err.replace("%J", job_id).replace("%I", str(index)) if err else None,
+                "out_overwrite": "-oo" in opts,
+                "env_mode": last("-env", "all"),
+                "cwd": last("-cwd", os.getcwd()),
+                "argv": argv,
+                "extra": {
+                    k: v for k, v in opts.items() if k in ("-R", "-P", "-M", "-app", "-m", "-We")
+                },
+                "spool": str(spool),
+                "status": "PEND",
+                "submit_time": time.time(),
+                "start_time": None,
+                "end_time": None,
+                "exit_code": None,
+                "term_reason": None,
+                "runner_pid": None,
+                "pgid": None,
+                "exec_host": None,
+                "kill_requested": False,
+                "user": _user(),
+            }
+    for key, _index, _name in elements:
+        log = open(wd / "runner" / f"{key}.log", "ab")
+        proc = subprocess.Popen(
+            [sys.executable, "-I", os.path.abspath(__file__), "--run", key],
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+            close_fds=True,
+        )
+        with locked_state() as state:
+            state["jobs"][key]["runner_pid"] = proc.pid
     sys.stdout.write(f"This job will be billed to {billing}\n")
     if default_queue:
         sys.stdout.write(f"Job <{job_id}> is submitted to default queue <{queue}>.\n")
@@ -298,18 +319,23 @@ def cmd_bsub(argv: list[str], stdin) -> int:
 # --- runner -------------------------------------------------------------------------------
 
 
-def _dep_satisfied(cond: str, dep: dict | None) -> bool | None:
-    """True = run, False = wait, None = never (stay pending forever)."""
-    if dep is None:
+def _dep_satisfied(cond: str, deps: list[dict]) -> bool | None:
+    """True = run, False = wait, None = never (real LSF then ends the job as an orphan;
+    this fake leaves it pending). ``deps`` are the entries
+    of the job depended on: for an array, all of its elements."""
+    if not deps:
         return None
-    st = dep["status"]
-    if st in ("PEND", "RUN"):
+    states = [d["status"] for d in deps]
+    if any(st in ("PEND", "RUN") for st in states):
         return False
     if cond == "ended":
         return True
     if cond == "done":
-        return True if st == "DONE" else None
-    return True if st == "EXIT" else None
+        return True if all(st == "DONE" for st in states) else None
+    if cond == "numexit":  # numexit(ID, >= 1): at least one element failed
+        return True if any(st == "EXIT" for st in states) else None
+    # exit(ID): for an array, LSF wants EVERY element to have failed
+    return True if all(st == "EXIT" for st in states) else None
 
 
 def _signal_sequence(pgid: int, first: int, grace: float) -> None:
@@ -351,7 +377,7 @@ def _job_env(job: dict, host: str) -> dict[str, str]:
             "LSB_JOBFILENAME": job["spool"],
             "LSB_SUB_HOST": "fakesubmit",
             "LSB_EXEC_CLUSTER": "fake",
-            "LSB_JOBINDEX": "0",
+            "LSB_JOBINDEX": str(job.get("index", 0)),
         }
     )
     if job["group"]:
@@ -382,8 +408,11 @@ def run_job(job_id: str) -> int:
                     status="EXIT", exit_code=130, term_reason="TERM_OWNER", end_time=time.time()
                 )
                 return 0
-            verdicts = [_dep_satisfied(c, state["jobs"].get(d)) for c, d in job["deps"]]
+            verdicts = [_dep_satisfied(c, _members(state["jobs"], d)) for c, d in job["deps"]]
             ready = all(v is True for v in verdicts) and time.time() - t0 >= pend_s
+            if ready and job.get("array_limit"):
+                running = sum(1 for j in _members(state["jobs"], job["id"]) if j["status"] == "RUN")
+                ready = running < job["array_limit"]
             if ready:
                 job["status"] = "RUN"
                 job["start_time"] = time.time()
@@ -472,6 +501,8 @@ def _fmt_time(t: float | None) -> str:
 def _field(job: dict, name: str) -> str:
     if name == "jobid":
         return job["id"]
+    if name == "jobindex":
+        return str(job.get("index", 0))
     if name == "stat":
         return job["status"]
     if name == "exit_code":
@@ -572,14 +603,13 @@ def cmd_bjobs(argv: list[str]) -> int:
     rows: list[dict] = []
     if ids:
         for jid in ids:
-            j = state["jobs"].get(jid)
-            if j is None or not visible(j):
+            found = [j for j in _members(state["jobs"], jid) if visible(j)]
+            if not found:
                 missing.append(jid)
-            else:
-                rows.append(j)
+            rows += found
     else:
         rows = [j for j in state["jobs"].values() if visible(j)]
-    rows.sort(key=lambda j: int(j["id"]))
+    rows.sort(key=lambda j: (int(j["id"]), j.get("index", 0)))
 
     for jid in missing:
         sys.stderr.write(f"Job <{jid}> is not found\n")
@@ -664,13 +694,21 @@ def cmd_bkill(argv: list[str]) -> int:
                 return 255
         else:
             for jid in ids:
-                j = jobs.get(jid)
-                if j is None or not in_scope(j):
+                members = [(k, j) for k, j in jobs.items() if j["id"] == jid and in_scope(j)]
+                active = [k for k, j in members if j["status"] in ("PEND", "RUN")]
+                if not members:
                     sys.stderr.write(f"Job <{jid}>: No matching job found\n")
-                elif j["status"] in ("DONE", "EXIT"):
+                elif not active:
                     sys.stderr.write(f"Job <{jid}>: Job has already finished\n")
+                elif members[0][1].get("index"):
+                    # A whole array by its id: LSF 10.1 answers once, on stderr, and ends the
+                    # elements one by one (seen on the Janelia cluster, 2026-11-20).
+                    for k in active:
+                        jobs[k]["kill_requested"] = True
+                    sys.stderr.write(f"Job <{jid}>: Operation is in progress\n")
+                    terminated += 1
                 else:
-                    targets.append(jid)
+                    targets += active
         for jid in targets:
             jobs[jid]["kill_requested"] = True
             sys.stdout.write(f"Job <{jid}> is being terminated\n")

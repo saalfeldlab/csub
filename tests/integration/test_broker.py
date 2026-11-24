@@ -390,3 +390,126 @@ def test_status_reports_usage(broker, submit, broker_env):
     assert e["source"] == "exit_code" and e["state"] == "EXIT" and e["exit_code"] == 3
     assert e["cpu_time_s"] == 0.5 and e["max_mem_mb"] == 12.0 and e["avg_mem_mb"] == 8.0
     assert e["mem_limit_mb"] == 15360.0 and e["run_time_s"] is not None
+
+
+# --- array jobs ---------------------------------------------------------------------------
+
+
+def test_array_job(broker, submit, fake_lsf, job_dir, tmp_home):
+    cmd = [
+        "sh",
+        "-c",
+        'echo "i=$CSUB_ARRAY_INDEX n=$CSUB_ARRAY_SIZE lsf=$LSB_JOBINDEX"; '
+        '[ "$CSUB_ARRAY_INDEX" != 3 ]',
+    ]
+    r = submit(cmd, name="sweep", array=4, array_concurrent=2)
+    jid = r["job_id"]
+    assert r["array"] == 4 and r["array_concurrent"] == 2
+    assert r["estimated_max_cost_usd_total"] == pytest.approx(4 * r["estimated_max_cost_usd"])
+    assert r["job_dir"] == str(job_dir(jid))
+
+    e = broker.wait(jid)
+    # element 3 exits 1: the array as a whole is EXIT, and says which element
+    assert e["state"] == "EXIT" and e["exit_code"] == 1 and e["name"] == "sweep"
+    assert e["array"] == {"size": 4, "counts": {"DONE": 3, "EXIT": 1}, "failed": [3]}
+    # what the array used: the highest peak memory, the CPU time of all elements together
+    assert e["max_mem_mb"] == 12.0 and e["cpu_time_s"] == 2.0 and e["mem_limit_mb"] == 15360.0
+    assert e["run_time_s"] is not None and e["avg_mem_mb"] is None
+    for i in (1, 2, 3, 4):
+        assert (job_dir(jid) / str(i) / "stdout").read_text() == f"i={i} n=4 lsf={i}\n"
+        bdir = tmp_home / ".csub" / "jobs" / jid
+        assert (bdir / str(i) / "exit_code").read_text() == ("1\n" if i == 3 else "0\n")
+        assert "Resource usage summary" in (bdir / f"lsf.{i}.out").read_text()
+    assert not (job_dir(jid) / "stdout").exists()
+    # one record for the array
+    assert json.loads((bdir / "meta.json").read_text())["array_size"] == 4
+    assert fake_lsf.jobs()[f"{jid}[1]"]["name"] == "csub-sweep[1]"
+
+    # the session listing shows the array once
+    listed = broker.status(session="testsess")
+    assert list(listed) == [jid] and listed[jid]["array"]["size"] == 4
+
+
+def test_array_status_after_lsf_forgot(broker, submit, broker_env, monkeypatch):
+    jid = submit(["sh", "-c", "exit $((CSUB_ARRAY_INDEX - 1))"], array=2)["job_id"]
+    broker.wait(jid)
+    broker.env = {**broker_env, "CSUB_FAKE_LSF_CLEAN_PERIOD_S": "0"}  # bjobs no longer lists it
+    e = broker.status(jid)[jid]
+    assert e["state"] == "EXIT" and e["exit_code"] == 1 and e["source"] == "exit_code"
+    assert e["array"] == {"size": 2, "counts": {"DONE": 1, "EXIT": 1}, "failed": [2]}
+    # the figures then come from each element's lsf.<index>.out
+    assert e["max_mem_mb"] == 12.0 and e["cpu_time_s"] == 1.0 and e["mem_limit_mb"] == 15360.0
+
+
+def test_array_all_done(broker, submit):
+    jid = submit(["true"], array=3)["job_id"]
+    e = broker.wait(jid)
+    assert e["state"] == "DONE" and e["exit_code"] == 0
+    assert e["array"] == {"size": 3, "counts": {"DONE": 3}, "failed": []}
+
+
+def test_array_concurrency_and_kill(broker, submit, fake_lsf):
+    jid = submit(["sleep", "60"], array=4, array_concurrent=2)["job_id"]
+    e = broker.wait(jid, states=("RUN",))
+    from tests.support.procs import wait_until
+
+    e = wait_until(
+        lambda: (s := broker.status(jid)[jid]) and s["array"]["counts"].get("RUN") == 2 and s,
+        timeout=20,
+        what="two elements running",
+    )
+    assert e["state"] == "RUN" and e["exit_code"] is None
+    assert e["array"]["counts"] == {"RUN": 2, "PEND": 2}  # no more than array_concurrent
+
+    k = broker.ok({"protocol": 1, "op": "kill", "job_ids": [jid]})
+    assert k["killed"] == [jid] and k["already_finished"] == []
+    e = broker.wait(jid, states=("EXIT",))
+    assert e["array"]["counts"] == {"EXIT": 4} and e["array"]["failed"] == [1, 2, 3, 4]
+    k = broker.ok({"protocol": 1, "op": "kill", "job_ids": [jid]})
+    assert k["killed"] == [] and k["already_finished"] == [jid]
+
+
+def test_array_kill_session_and_dependency(broker, submit):
+    a = submit(["sleep", "60"], array=2)["job_id"]
+    after = submit(["true"], depends_on=[{"job_id": a, "when": "ended"}])["job_id"]
+    broker.wait(a, states=("RUN",))
+    assert broker.status(after)[after]["state"] == "PEND"  # waits for every element
+    k = broker.ok({"protocol": 1, "op": "kill", "session": "testsess"})
+    assert a in k["killed"]
+    broker.wait(a, states=("EXIT",))
+
+
+def test_array_dependency_on_failure(broker, submit):
+    # One element of three fails: a job waiting for "exit" runs, as it does after a failed job.
+    a = submit(["sh", "-c", '[ "$CSUB_ARRAY_INDEX" != 2 ]'], array=3)["job_id"]
+    on_exit = submit(["true"], depends_on=[{"job_id": a, "when": "exit"}])["job_id"]
+    assert broker.wait(a)["state"] == "EXIT"
+    assert broker.wait(on_exit)["state"] == "DONE"
+
+
+def test_array_limits(broker, submit, int_policy_dict, policy_path):
+    from tests.support.policyfile import write_policy
+
+    # An element of an array cannot be named in a dependency or a status request.
+    err = submit(["true"], depends_on=["12[3]"], expect_ok=False)["error"]
+    assert err["code"] == "invalid_request" and "array" in err["message"]
+
+    int_policy_dict["limits"]["max_array_size"] = 3
+    int_policy_dict["limits"]["max_pending_per_session"] = 1
+    write_policy(policy_path, int_policy_dict)
+    err = submit(["true"], array=4, expect_ok=False)["error"]
+    assert err["code"] == "policy_violation" and "maximum of 3" in err["message"]
+
+    # A pending array is ONE pending job, however many elements wait.
+    blocker = submit(["sleep", "60"])["job_id"]
+    broker.wait(blocker, states=("RUN",))
+    arr = submit(["true"], array=3, depends_on=[blocker])["job_id"]
+    assert broker.status(arr)[arr]["array"]["counts"] == {"PEND": 3}
+    err = submit(["true"], expect_ok=False)["error"]
+    assert err["code"] == "policy_violation" and "1 pending" in err["message"]
+    broker.ok({"protocol": 1, "op": "kill", "session": "testsess"})
+
+    int_policy_dict["limits"]["max_array_size"] = 0
+    write_policy(policy_path, int_policy_dict)
+    err = submit(["true"], array=2, expect_ok=False)["error"]
+    assert err["code"] == "policy_violation" and "not permitted" in err["message"]

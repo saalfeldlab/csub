@@ -124,6 +124,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="run this agent harness in the job, e.g. claude (policy permitting)",
     )
     s.add_argument("--depends-on", action="append", default=[], metavar="ID[:done|ended|exit]")
+    s.add_argument(
+        "--array",
+        type=int,
+        metavar="N",
+        help="an array job of N elements; each gets CSUB_ARRAY_INDEX = 1..N",
+    )
+    s.add_argument(
+        "--array-concurrent", type=int, metavar="M", help="with --array: at most M at a time"
+    )
     s.add_argument("--cwd")
     s.add_argument("--session")
     s.add_argument("--shell", action="store_true", help="run a script body instead of an argv")
@@ -162,6 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
     lg.add_argument("--tail", type=int)
     lg.add_argument("--follow", "-f", action="store_true", help="keep printing until the job ends")
     lg.add_argument("--cwd", help="the job's working directory (default: ask the broker)")
+    lg.add_argument("--index", type=int, metavar="I", help="for an array job: which element")
 
     sub.add_parser("probe", help="show what the broker allows: queues, limits, images, hosts")
 
@@ -214,6 +224,10 @@ def spec_from_args(ns: argparse.Namespace, stdin: TextIO) -> JobSpec:
             d[key] = getattr(ns, key)
     if ns.gpu_mem_gb is not None:
         d["gpu_mem_gb"] = ns.gpu_mem_gb
+    if ns.array is not None:
+        d["array"] = ns.array
+    if ns.array_concurrent is not None:
+        d["array_concurrent"] = ns.array_concurrent
     if ns.env:
         d["env"] = parse_env(ns.env)
     if ns.allow:
@@ -251,10 +265,17 @@ def format_status_table(entries) -> str:
         ("JOBID", "STATE", "EXIT", "QUEUE", "HOST", "CPU", "RUNTIME", "MAXMEM", "MEMLIM", "NAME")
     ]
     for e in entries:
+        state = e.state
+        if e.array:
+            # e.g. "RUN 3/20 done, 1 failed"
+            counts = e.array.get("counts", {})
+            state += f" {counts.get('DONE', 0)}/{e.array.get('size', 0)} done"
+            if counts.get("EXIT"):
+                state += f", {counts['EXIT']} failed"
         rows.append(
             (
                 e.job_id,
-                e.state,
+                state,
                 "-" if e.exit_code is None else str(e.exit_code),
                 e.queue or "-",
                 e.exec_host or "-",
@@ -339,10 +360,18 @@ def cmd_submit(ns, client: Client, out: TextIO, stdin: TextIO) -> int:
     else:
         billed = f" billed to {r.billing_group}" if r.billing_group else ""
         via = f" via {r.sandbox}" if r.sandbox else ""
+        if r.array:
+            cost = (
+                f"est. max ${r.estimated_max_cost_usd:.2f} each, "
+                f"${r.estimated_max_cost_usd_total or 0:.2f} in all"
+            )
+            what = f"Array job {r.job_id} ({_plural(r.array, 'element')})"
+        else:
+            cost = f"est. max ${r.estimated_max_cost_usd:.2f}"
+            what = f"Job {r.job_id}"
         out.write(
-            f"Job {r.job_id} submitted to {r.queue}{via} "
-            f"({_plural(r.slots, 'slot')}, {r.walltime_min} min, "
-            f"est. max ${r.estimated_max_cost_usd:.2f}){billed}\n"
+            f"{what} submitted to {r.queue}{via} "
+            f"({_plural(r.slots, 'slot')}, {r.walltime_min} min, {cost}){billed}\n"
         )
     if not ns.wait:
         return 0
@@ -393,6 +422,7 @@ def cmd_kill(ns, client: Client, out: TextIO) -> int:
 def cmd_logs(ns, client: Client, out: TextIO, sleep: Callable[[float], None] = time.sleep) -> int:
     stream = "stdout" if ns.stdout else "stderr" if ns.stderr else "both"
     cwd = ns.cwd
+    element = {"index": ns.index} if ns.index else {}
     if ns.follow:
         shown = {"stdout": "", "stderr": ""}
         while True:
@@ -400,7 +430,7 @@ def cmd_logs(ns, client: Client, out: TextIO, sleep: Callable[[float], None] = t
             cwd = cwd or st.cwd
             if cwd:
                 try:
-                    lg = client.logs(ns.job_id, stream=stream, cwd=cwd)
+                    lg = client.logs(ns.job_id, stream=stream, cwd=cwd, **element)
                 except CsubError as e:
                     if e.code != "not_found":
                         raise
@@ -415,7 +445,7 @@ def cmd_logs(ns, client: Client, out: TextIO, sleep: Callable[[float], None] = t
             if st.terminal:
                 return 0
             sleep(2.0)
-    lg = client.logs(ns.job_id, stream=stream, tail=ns.tail, cwd=cwd)
+    lg = client.logs(ns.job_id, stream=stream, tail=ns.tail, cwd=cwd, **element)
     if ns.json:
         out.write(json.dumps(lg.__dict__, indent=1) + "\n")
         return 0

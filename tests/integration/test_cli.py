@@ -79,3 +79,26 @@ def test_cli_kill(cli):
     assert f"Job {jid} is being terminated" in cp.stdout
     cp = cli("wait", jid, "--timeout", "30", check=False)
     assert cp.returncode in (1, 130, 137, 143) and "EXIT" in cp.stdout
+
+
+def test_cli_array(cli, project_dir):
+    cp = cli(
+        "submit", "--name", "sweep", "--walltime", "10", "--array", "3", "--array-concurrent", "2",
+        "--", "sh", "-c", 'echo "element $CSUB_ARRAY_INDEX"; [ "$CSUB_ARRAY_INDEX" != 2 ]',
+    )  # fmt: skip
+    assert cp.stdout.startswith("Array job ") and "(3 elements) submitted to short" in cp.stdout
+    assert "est. max $0.01 each, $0.03 in all" in cp.stdout
+    jid = cp.stdout.split()[2]
+    cp = cli("wait", jid, "--timeout", "60", check=False)
+    # the array failed because element 2 did; wait shows that element's output
+    assert cp.returncode != 0 and f"Job {jid}: EXIT (exit 1)" in cp.stdout
+    assert "element 2" in cp.stdout
+    cp = cli("status")
+    assert "EXIT 2/3 done, 1 failed" in cp.stdout
+    st = json.loads(cli("--json", "status", jid).stdout)[0]
+    assert st["array"] == {"size": 3, "counts": {"DONE": 2, "EXIT": 1}, "failed": [2]}
+    assert cli("logs", jid, "--index", "3", "--stdout").stdout == "element 3\n"
+    cp = cli("logs", jid, check=False)
+    assert cp.returncode != 0 and "array job" in cp.stderr and "index" in cp.stderr
+    cp = cli("logs", jid, "--index", "9", check=False)
+    assert cp.returncode != 0 and "element 9" in cp.stderr

@@ -426,3 +426,48 @@ def test_execute_bwrap_job(make_spec, make_policy, ctx, exec_env, project_dir, f
     rec = fake_sandbox.for_job("42")
     assert rec["script"] == "sandbox-run.sh" and rec["cwd"] == str(project_dir)
     assert not (job_dir / "sandbox-run.json").exists(), "state dir must not be the bwrap cwd"
+
+
+# --- array jobs ---------------------------------------------------------------------------
+
+
+def test_array_wrapper_structure(render):
+    job, text, _ = render(name="sweep", array=5, scratch=True)
+    # The record stays in jobs/<id>/; each element gets jobs/<id>/<index>/ for what it runs with.
+    assert f'JOB_DIR={STATE}/jobs/"$LSB_JOBID"' in text
+    assert 'RUN_DIR="$JOB_DIR"/"$LSB_JOBINDEX"' in text
+    assert 'mkdir -p "$RUN_DIR" && cd "$RUN_DIR"' in text
+    assert f'{BROKER} --serve "$RUN_DIR/csub.sock" --parent "$JOB_DIR" &' in text
+    assert '--ro "$RUN_DIR/csub.sock"' in text and '"$JOB_DIR/csub.sock"' not in text
+    assert '[ -n "$rc" ] && echo "$rc" > "$RUN_DIR/exit_code"' in text
+    assert '/csub/"$LSB_JOBID"."$LSB_JOBINDEX"; mkdir -p "$SCRATCH"' in text
+    assert text.rstrip().splitlines()[-3].endswith('"$RUN_DIR/csub.sock" "$LSB_JOBINDEX"')
+    subprocess.run(["sh", "-n"], input=text, text=True, check=True)
+    inner = render_inner(job)
+    assert '/.csub/jobs/"$1"/"$7"\n' in inner
+    assert 'export CSUB_ARRAY_INDEX="$7" LSB_JOBINDEX="$7" CSUB_ARRAY_SIZE=5' in inner
+    subprocess.run(["sh", "-n"], input=inner, text=True, check=True)
+
+
+def test_ordinary_job_has_no_array_parts(render):
+    job, text, _ = render(name="one")
+    assert "RUN_DIR" not in text and "LSB_JOBINDEX" not in text
+    assert "CSUB_ARRAY" not in render_inner(job)
+
+
+def test_execute_array_elements(make_spec, policy, ctx, exec_env, project_dir, fake_sandbox):
+    """Two elements of one array, run one after the other as LSF would start them."""
+    cmd = [
+        "sh",
+        "-c",
+        'echo "element $CSUB_ARRAY_INDEX of $CSUB_ARRAY_SIZE"; exit "$CSUB_ARRAY_INDEX"',
+    ]
+    job = resolve(make_spec(command=cmd, array=2, scratch=True), policy, ctx)
+    for index in ("1", "2"):
+        r, job_dir, _ = exec_env(job, env_extra={"LSB_JOBINDEX": index})
+        assert r.returncode == int(index), r.stderr
+        assert (job_dir / index / "exit_code").read_text() == f"{index}\n"
+        out = project_dir / ".csub" / "jobs" / "42" / index
+        assert (out / "stdout").read_text() == f"element {index} of 2\n"
+    assert not (job_dir / "exit_code").exists()  # nothing at the array's own level
+    assert not (project_dir / ".csub" / "jobs" / "42" / "stdout").exists()
