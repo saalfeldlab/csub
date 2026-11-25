@@ -67,6 +67,8 @@ test-integration = "pytest tests/integration"
 test-e2e = "pytest tests/e2e"
 lint = "ruff check . && ruff format --check ."
 fmt = "ruff format ."
+# dev broker for a sandbox beside it; refuses to start if one is already serving the socket
+broker = "mkdir -p /tmp/csub-$USER && csub-broker --serve /tmp/csub-$USER/sock"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
